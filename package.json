@@ -1,0 +1,68 @@
+{
+  "name": "chaogu-picker",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A股主板选股桌面应用：情绪类 / 消息类 / 大事件类",
+  "main": "src/main.js",
+  "author": "LYY",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Lyy-star/chaogu-picker.git"
+  },
+  "homepage": "https://github.com/Lyy-star/chaogu-picker/releases",
+  "scripts": {
+    "start": "electron .",
+    "web": "node src/web-shell.js",
+    "server": "node src/server.js",
+    "icon": "node scripts/make-icon.js",
+    "shortcut": "powershell -ExecutionPolicy Bypass -File scripts/create-shortcut.ps1",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder --win",
+    "release": "electron-builder --win --publish always"
+  },
+  "build": {
+    "appId": "com.lyy.chaogupicker",
+    "productName": "lyy创意选股",
+    "copyright": "Copyright © 2026 LYY",
+    "directories": {
+      "output": "release",
+      "buildResources": "assets"
+    },
+    "files": [
+      "src/**/*",
+      "web/**/*",
+      "assets/**/*",
+      "package.json"
+    ],
+    "win": {
+      "icon": "assets/chaogu.ico",
+      "target": [
+        { "target": "nsis", "arch": ["x64"] },
+        { "target": "portable", "arch": ["x64"] }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "lyy创意选股",
+      "artifactName": "chaogu-picker-${version}-setup.${ext}"
+    },
+    "portable": {
+      "artifactName": "chaogu-picker-${version}-portable.${ext}"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "releaseType": "release"
+      }
+    ]
+  },
+  "devDependencies": {
+    "electron": "^44.3.0",
+    "electron-builder": "^26.0.0"
+  }
+}

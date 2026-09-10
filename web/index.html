@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self';" />
+  <title>lyy创意选股</title>
+  <link rel="icon" type="image/png" href="/favicon.png" />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <img class="logo-mark" src="/favicon.png" alt="lyy创意选股" width="24" height="24" />
+      <span class="logo">lyy创意选股</span>
+      <span class="brand-sub">A 股主板选股台</span>
+    </div>
+
+    <div class="market-strip" id="marketStrip">
+      <div class="index-skeleton">行情加载中…</div>
+    </div>
+
+    <div class="actions">
+      <span class="status" id="statusText">准备中</span>
+      <button class="btn" id="refreshBtn" title="重新抓取并计算（约 15 秒）">刷新</button>
+    </div>
+  </header>
+
+  <nav class="tabs" id="tabs">
+    <button class="tab active" data-tab="top">今日推荐</button>
+    <button class="tab" data-tab="portfolio">我的模拟盘</button>
+    <button class="tab" data-tab="sentiment">情绪类</button>
+    <button class="tab" data-tab="news">消息类</button>
+    <button class="tab" data-tab="event">大事件类</button>
+    <button class="tab" data-tab="fundamental">基本面类</button>
+    <button class="tab" data-tab="calendar">事件日历</button>
+    <button class="tab" data-tab="watch">自选</button>
+  </nav>
+
+  <main class="content">
+    <section class="cat-head" id="catHead">
+      <h1 id="catTitle">今日推荐</h1>
+      <p id="catHeadline" class="headline">正在抓取行情并计算…</p>
+      <details class="method">
+        <summary>选股逻辑与免责说明</summary>
+        <div id="catMethod" class="method-body"></div>
+      </details>
+    </section>
+
+    <section class="list-wrap">
+      <div class="list-head" id="listHead"></div>
+      <div class="list" id="list">
+        <div class="loading">
+          <div class="spinner"></div>
+          <div id="loadingText">正在抓取全市场行情（首次约 15 秒）…</div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <aside class="detail" id="detail" hidden>
+    <div class="detail-inner" id="detailInner"></div>
+  </aside>
+  <div class="scrim" id="scrim" hidden></div>
+
+  <div class="toast" id="toast" hidden></div>
+
+  <script src="/charts.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>
