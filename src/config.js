@@ -5,8 +5,32 @@ const os = require('os');
 const fs = require('fs');
 
 const ROOT = path.resolve(__dirname, '..');
-const CACHE_DIR = path.join(ROOT, '.cache');
-const USER_DIR = path.join(ROOT, 'userdata');
+
+/**
+ * 数据目录。
+ *
+ * 开发时（npm start / start.bat）就用项目目录里的 .cache、userdata，方便查看。
+ * 打包成安装版后 ROOT 指向只读的 app.asar，必须换成系统的用户数据目录，
+ * 否则模拟盘、自选、自定义事件、行情缓存全都写不进去。
+ */
+function resolveDataRoot() {
+  if (!ROOT.includes('app.asar')) return ROOT;
+  try {
+    // eslint-disable-next-line global-require
+    const electron = require('electron');
+    if (electron && electron.app && typeof electron.app.getPath === 'function') {
+      const dir = electron.app.getPath('userData');
+      if (dir) return dir;
+    }
+  } catch (_) {
+    /* 拿不到就用下面的兜底目录 */
+  }
+  return path.join(os.homedir(), '.lyy-chaogu');
+}
+
+const DATA_ROOT = resolveDataRoot();
+const CACHE_DIR = path.join(DATA_ROOT, '.cache');
+const USER_DIR = path.join(DATA_ROOT, 'userdata');
 
 for (const dir of [CACHE_DIR, USER_DIR]) {
   try {
@@ -18,6 +42,7 @@ for (const dir of [CACHE_DIR, USER_DIR]) {
 
 module.exports = {
   ROOT,
+  DATA_ROOT,
   CACHE_DIR,
   USER_DIR,
   WEB_DIR: path.join(ROOT, 'web'),

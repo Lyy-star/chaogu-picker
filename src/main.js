@@ -16,9 +16,10 @@ try {
   process.exit(1);
 }
 
-const { app, BrowserWindow, shell, ipcMain } = electron;
+const { app, BrowserWindow, shell } = electron;
 const cfg = require('./config');
 const { start } = require('./server');
+const update = require('./update');
 
 const APP_ID = 'com.lyy.chaogupicker';
 const ICON_FILE = path.join(__dirname, '..', 'assets', 'chaogu.ico');
@@ -69,6 +70,7 @@ app.whenReady().then(async () => {
   try {
     const url = await bootstrap();
     createWindow(url);
+    update.init();
   } catch (err) {
     console.error('启动失败:', err.message);
     app.quit();
@@ -88,5 +90,3 @@ app.on('window-all-closed', () => {
 app.on('before-quit', () => {
   if (server) server.close();
 });
-
-ipcMain.handle('app-info', () => ({ version: app.getVersion(), port: cfg.PORT }));

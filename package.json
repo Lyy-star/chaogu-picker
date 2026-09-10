@@ -19,7 +19,8 @@
     "shortcut": "powershell -ExecutionPolicy Bypass -File scripts/create-shortcut.ps1",
     "pack": "electron-builder --dir",
     "dist": "electron-builder --win",
-    "release": "electron-builder --win --publish always"
+    "release": "electron-builder --win --publish always",
+    "dist:nopublish": "electron-builder --win --publish never"
   },
   "build": {
     "appId": "com.lyy.chaogupicker",
@@ -38,8 +39,18 @@
     "win": {
       "icon": "assets/chaogu.ico",
       "target": [
-        { "target": "nsis", "arch": ["x64"] },
-        { "target": "portable", "arch": ["x64"] }
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
       ]
     },
     "nsis": {
@@ -57,6 +68,8 @@
     "publish": [
       {
         "provider": "github",
+        "owner": "Lyy-star",
+        "repo": "chaogu-picker",
         "releaseType": "release"
       }
     ]

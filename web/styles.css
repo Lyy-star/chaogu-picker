@@ -570,3 +570,55 @@ ul.risks li { margin-bottom: 6px; line-height: 1.65; }
   .list-head, .row { grid-template-columns: 32px minmax(110px, 1.4fr) 78px 72px 70px 110px minmax(140px, 1.6fr); }
   .col-hide { display: none; }
 }
+
+/* ---------------------- 通用按钮 ---------------------- */
+
+.btn.ghost { background: transparent; border: 1px solid var(--line, #2a3242); color: var(--text-dim, #97a1b3); }
+.btn.ghost:hover { color: var(--text, #e8ecf4); border-color: #3a4456; }
+.btn[disabled] { opacity: .55; cursor: default; }
+
+/* ---------------------- 检查更新 ---------------------- */
+
+/* hidden 属性要真的隐藏：否则作者样式里的 display 会盖掉浏览器默认的 display:none */
+[hidden] { display: none !important; }
+
+.update-overlay {
+  position: fixed; inset: 0; z-index: 80;
+  background: rgba(6, 8, 12, .62);
+  display: flex; align-items: center; justify-content: center;
+  padding: 24px;
+}
+.update-card {
+  width: min(440px, 100%);
+  max-height: 80vh; overflow: auto;
+  background: var(--bg-panel, #161b24);
+  border: 1px solid var(--line, #2a3242);
+  border-radius: 14px;
+  padding: 18px 20px 20px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, .45);
+}
+.update-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+.update-head h2 { font-size: 15px; font-weight: 600; margin: 0; }
+.up-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 9px 0; border-bottom: 1px dashed var(--line, #2a3242);
+  font-size: 12.5px; color: var(--text-dim, #97a1b3);
+}
+.up-row b { color: var(--text, #e8ecf4); font-variant-numeric: tabular-nums; }
+.up-badge {
+  padding: 2px 9px; border-radius: 999px; font-size: 11.5px;
+  background: #232a36; color: var(--text-dim, #97a1b3);
+}
+.up-badge-new { background: rgba(232, 66, 66, .16); color: #ff8080; }
+.up-badge-err { background: rgba(240, 173, 78, .16); color: #f0ad4e; }
+.up-hint { margin-top: 14px; font-size: 12.5px; line-height: 1.75; color: var(--text-dim, #97a1b3); }
+.up-notes {
+  margin-top: 12px; padding: 10px 12px; border-radius: 8px;
+  max-height: 190px; overflow: auto;
+  background: #1b212b; border: 1px solid var(--line, #2a3242);
+  font-size: 12.5px; line-height: 1.7; color: var(--text-dim, #97a1b3);
+  white-space: pre-wrap; word-break: break-word;
+}
+.up-progress { margin-top: 14px; height: 6px; border-radius: 999px; background: #232a36; overflow: hidden; }
+.up-progress i { display: block; height: 100%; background: var(--accent, #4d8bf0); transition: width .25s ease; }
+.up-actions { margin-top: 16px; display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }

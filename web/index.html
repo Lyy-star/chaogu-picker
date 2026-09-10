@@ -22,6 +22,7 @@
     </div>
 
     <div class="actions">
+      <button class="btn ghost" id="updateBtn" title="检查有没有新版本">检查更新</button>
       <span class="status" id="statusText">准备中</span>
       <button class="btn" id="refreshBtn" title="重新抓取并计算（约 15 秒）">刷新</button>
     </div>
@@ -65,6 +66,16 @@
   <div class="scrim" id="scrim" hidden></div>
 
   <div class="toast" id="toast" hidden></div>
+
+  <div class="update-overlay" id="updateOverlay" hidden>
+    <div class="update-card" role="dialog" aria-modal="true" aria-labelledby="updateTitle">
+      <div class="update-head">
+        <h2 id="updateTitle">检查更新</h2>
+        <button class="btn ghost" id="updateCloseBtn" title="关闭">关闭</button>
+      </div>
+      <div class="update-body" id="updateBody"></div>
+    </div>
+  </div>
 
   <script src="/charts.js"></script>
   <script src="/app.js"></script>

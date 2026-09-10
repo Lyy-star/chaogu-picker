@@ -4,3 +4,4 @@ userdata/
 release/
 dist/
 *.log
+.local/

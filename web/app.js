@@ -1321,6 +1321,122 @@
     if (c) window.Charts.drawEquity(c, state.portfolio.equity || [], state.portfolio.profile.initialCapital);
   });
 
+  /* ---------------------- 手动检查更新 ---------------------- */
+
+  const updateApi = window.chaogu && window.chaogu.updates ? window.chaogu.updates : null;
+  const updateModel = { status: {} };
+
+  function updateText(s) {
+    switch (s.status) {
+      case 'checking': return '正在检查…';
+      case 'available': return '发现新版本';
+      case 'not-available': return '已是最新';
+      case 'downloading': return '下载中 ' + (s.progress || 0) + '%';
+      case 'downloaded': return '正在安装';
+      case 'error': return '检查失败';
+      default: return '待检查';
+    }
+  }
+
+  function updateHtml() {
+    const s = updateModel.status || {};
+    const cls = s.status === 'available'
+      ? 'up-badge up-badge-new'
+      : (s.status === 'error' ? 'up-badge up-badge-err' : 'up-badge');
+
+    const rows = [];
+    rows.push('<div class="up-row"><span>当前版本</span><b>v' + esc(s.current || '—') + '</b></div>');
+    rows.push('<div class="up-row"><span>最新版本</span><b>' + (s.latest ? 'v' + esc(s.latest) : '—') + '</b></div>');
+    rows.push('<div class="up-row"><span>状态</span><span class="' + cls + '">' + esc(updateText(s)) + '</span></div>');
+
+    const progress = s.status === 'downloading'
+      ? '<div class="up-progress"><i style="width:' + Math.max(2, Math.min(100, s.progress || 0)) + '%"></i></div>'
+      : '';
+    const notes = s.notes && s.status === 'available'
+      ? '<div class="up-notes">' + esc(s.notes) + '</div>'
+      : '';
+    let hint = '';
+    if (s.error) hint = '<div class="up-hint">' + esc(s.message || '') + '：' + esc(s.error) + '</div>';
+    else if (s.message && s.status !== 'available') hint = '<div class="up-hint">' + esc(s.message) + '</div>';
+
+    const actions = [];
+    if (!updateApi) {
+      actions.push('<button class="btn ghost" data-act="close">关闭</button>');
+    } else {
+      if (s.status === 'available' || s.status === 'error' || s.status === 'downloaded') {
+        actions.push('<button class="btn" data-act="install">下载并安装</button>');
+      }
+      if (s.status !== 'downloading' && s.status !== 'downloaded') {
+        actions.push('<button class="btn ghost" data-act="check">重新检查</button>');
+      }
+      if (s.error) actions.push('<button class="btn ghost" data-act="page">去下载页</button>');
+      actions.push('<button class="btn ghost" data-act="close">关闭</button>');
+    }
+
+    return rows.join('') + progress + notes + hint + '<div class="up-actions">' + actions.join('') + '</div>';
+  }
+
+  function renderUpdate() {
+    const body = $('#updateBody');
+    if (body) body.innerHTML = updateHtml();
+  }
+
+  function closeUpdatePanel() {
+    const overlay = $('#updateOverlay');
+    if (overlay) overlay.hidden = true;
+  }
+
+  async function openUpdatePanel(runCheck) {
+    const overlay = $('#updateOverlay');
+    if (!overlay) return;
+    overlay.hidden = false;
+    renderUpdate();
+    if (runCheck && updateApi) {
+      updateModel.status = await updateApi.check();
+      renderUpdate();
+    }
+  }
+
+  function initUpdate() {
+    const btn = $('#updateBtn');
+    const overlay = $('#updateOverlay');
+    const body = $('#updateBody');
+    if (!btn || !overlay || !body) return;
+
+    if (updateApi) {
+      updateApi.onStatus((s) => { updateModel.status = s; renderUpdate(); });
+      updateApi.getState().then((s) => { updateModel.status = s; }).catch(() => {});
+    } else {
+      updateModel.status = { message: '浏览器外壳模式不能自动更新，请用安装版桌面应用。' };
+    }
+
+    btn.addEventListener('click', () => { openUpdatePanel(true).catch(() => {}); });
+    $('#updateCloseBtn').addEventListener('click', closeUpdatePanel);
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) closeUpdatePanel(); });
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !overlay.hidden) closeUpdatePanel(); });
+
+    body.addEventListener('click', async (e) => {
+      const act = e.target && e.target.dataset ? e.target.dataset.act : '';
+      if (!act) return;
+      if (act === 'close') { closeUpdatePanel(); return; }
+      if (act === 'page') { if (updateApi) updateApi.openReleasePage(); return; }
+      if (!updateApi) return;
+
+      e.target.disabled = true;
+      try {
+        if (act === 'check') updateModel.status = await updateApi.check();
+        else if (act === 'install') updateModel.status = await updateApi.downloadAndInstall();
+      } catch (err) {
+        toast(err && err.message ? err.message : '操作失败');
+      } finally {
+        if (e.target) e.target.disabled = false;
+        renderUpdate();
+      }
+    });
+  }
+
+  initUpdate();
+
   setStatus('准备中');
   loadOverview();
   loadPicks(false);

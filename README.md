@@ -348,12 +348,72 @@ $env:GH_TOKEN='<带 repo 权限的 Personal Access Token>'
 npm run release
 ```
 
-> `build.publish` 用的是 `provider: github`，electron-builder 会按 `repository` 字段推断目标仓库，
-> 所以只要那个字段指向你的仓库，Release 就会发到那里。
+> `build.publish` 用的是 `provider: github`，仓库显式写在 `owner` / `repo` 里
+> （现在是 `Lyy-star/chaogu-picker`，换仓库记得一起改）。
+
+
+### 4. 发布 / 更新工具（独立目录，不在本项目里）
+
+发布相关的脚本**已经从本项目里挪出去了**，放在 **`E:\chaogu-publish`**。
+这样它不会跟着桌面应用一起打包发出去，朋友拿到的只有应用本身。
+
+双击 `E:\chaogu-publish\manage.bat` 打开中文菜单，日常发布不用记命令行：
+
+| 菜单 | 作用 | 相当于 |
+| --- | --- | --- |
+| 1 启动应用 | 开发模式跑起来 | `npm start` |
+| 2 浏览器外壳 | 不开 Electron 也能看 | `npm run web` |
+| 3 打包安装包 | 生成图标 + 打安装包，不发布 | `npm run icon` + `npm run dist:nopublish` |
+| 4 一键发版 | 改版本号 → 打包 → 上传 GitHub Release → 提交 + 打标签 + 推送 | 见下 |
+| 5 只上传已有产物 | 把 `release\` 里的 exe / `latest.yml` 传到 Releases | `node publish.js` |
+| 6 只打标签推送 | 交给 GitHub Actions 打包发布 | `git tag` + `git push` |
+| 7 检查更新 | 对比本地版本和线上最新版本 | `node check-update.js` |
+| 8 查看状态 | 版本、git 状态、本地产物、更新源配置 | |
+| 9 设置 GitHub Token | 存到 `E:\chaogu-publish\token.txt`（不进任何仓库） | |
+| c 清理 | 删掉本项目的 `release\` 产物和 `.cache\` 行情缓存 | |
+
+命令行也能直接跑，适合做计划任务：
+
+```bat
+E:\chaogu-publish\manage.bat -Action status    # 看状态
+E:\chaogu-publish\manage.bat -Action check     # 查线上有没有新版本
+E:\chaogu-publish\manage.bat -Action build     # 只打包
+E:\chaogu-publish\manage.bat -Action publish   # 一键发版（会问版本号怎么升）
+E:\chaogu-publish\manage.bat -Action upload    # 只上传已有产物
+E:\chaogu-publish\manage.bat -Action tag       # 只推标签，走 Actions
+```
+
+工具里的 `config.json` 决定发布哪个项目（`projectDir`），换项目只改这一行；
+完整说明见 `E:\chaogu-publish\README.md`。
+
+发布要用的 GitHub Token 在 <https://github.com/settings/tokens> 生成：classic token 勾 `repo`，
+或者 fine-grained token 给这个仓库 `Contents: Read and write`。工具会存在 `E:\chaogu-publish\token.txt` 里复用，
+也可以直接设环境变量 `GH_TOKEN`。
 
 ---
 
-## 九、重要声明
+## 九、客户端自动更新
+
+用安装包（`chaogu-picker-<版本>-setup.exe`）装出来的应用会自己检查更新，代码在 `src/updater.js`：
+
+- 启动 8 秒后自动查一次，之后每 6 小时查一次；也可以点右上角版本号手动查；
+- 更新源就是本仓库的 GitHub Releases（`package.json → build.publish`），拉 `latest.yml` 比对版本号与 sha512；
+- 发现新版本不会偷偷下载：点「下载更新」，下完点「重启并安装」，会直接覆盖安装并自动打开应用；
+- 网络默认是「系统代理 + api.github.com 直连」：查版本用的是 GitHub API，走代理很容易撞上出口 IP 的匿名额度
+  （`403 API rate limit exceeded`），而 api.github.com 直连一般是通的；安装包下载仍然走系统代理；
+- 想完全指定代理就设 `CHAOGU_UPDATE_PROXY=http://127.0.0.1:7890`（默认仍让 api.github.com 直连，
+  不想绕开再加 `CHAOGU_UPDATE_API_BYPASS=0`）；检查失败时会自动改用直连重试一次；
+- 更新日志写在 `%APPDATA%\chaogu-picker\updater.log`，排查问题时可以直接看。
+
+几个必须知道的点：
+
+- **便携版（portable exe）不能自我更新**，界面上只会提示去 Release 页下载；
+- **开发模式（`npm start`）不检查更新**，只有打包后的安装版才会；
+- 发版时 `package.json` 的 `version` 必须递增，否则客户端会认为"已是最新"；`latest.yml` 必须一起上传（管理脚本会自动带上）。
+
+---
+
+## 十、重要声明
 
 - 本工具的所有评分、胜率、买卖价位都是**基于公开数据的规则化推算**，属于"相对排序"，**不构成投资建议**，也不保证任何收益。
 - 消息类只使用**公开公告和公开媒体信息**，程序不会、也无法获取内幕消息；C 级线索请以公司公告为准。
