@@ -622,3 +622,36 @@ ul.risks li { margin-bottom: 6px; line-height: 1.65; }
 .up-progress { margin-top: 14px; height: 6px; border-radius: 999px; background: #232a36; overflow: hidden; }
 .up-progress i { display: block; height: 100%; background: var(--accent, #4d8bf0); transition: width .25s ease; }
 .up-actions { margin-top: 16px; display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+
+/* ---------------------- 搜股票 ---------------------- */
+
+.search-bar { display: flex; gap: 8px; margin-bottom: 10px; }
+.search-bar input {
+  flex: 1; min-width: 0;
+  background: #1b212b; border: 1px solid var(--line, #2a3242); border-radius: 8px;
+  color: var(--text, #e8ecf4); font-size: 13px; padding: 9px 12px; outline: none;
+}
+.search-bar input::placeholder { color: var(--text-faint, #6b7688); }
+.search-bar input:focus { border-color: var(--accent, #4d8bf0); }
+.search-results {
+  margin-bottom: 12px; border: 1px solid var(--line, #2a3242); border-radius: 10px;
+  background: #161b24; overflow: hidden;
+}
+.search-item {
+  display: flex; align-items: center; gap: 12px;
+  padding: 9px 12px; border-bottom: 1px solid rgba(42, 50, 66, .55);
+}
+.search-item:last-child { border-bottom: none; }
+.search-item .si-main {
+  flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 8px;
+  cursor: pointer; overflow: hidden; white-space: nowrap;
+}
+.search-item .si-main:hover .stock-name { color: var(--accent, #4d8bf0); }
+.search-item .si-num { font-size: 13px; font-variant-numeric: tabular-nums; }
+.search-item .si-num .sub { margin-left: 6px; font-size: 11.5px; }
+.search-empty { padding: 11px 12px; color: var(--text-dim, #97a1b3); font-size: 12.5px; line-height: 1.7; }
+.analysis-line {
+  margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--line, #2a3242);
+  color: var(--text-dim, #97a1b3); font-size: 12.5px; line-height: 1.8;
+}
+.analysis-line b { color: var(--text, #e8ecf4); font-weight: 600; }

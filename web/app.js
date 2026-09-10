@@ -19,6 +19,8 @@
     detailCode: null,
     detailCache: new Map(),
     watch: loadWatch(),
+    search: null,
+    searchQ: '',
     loadingPicks: false,
     loadingPortfolio: false,
   };
@@ -238,6 +240,8 @@
   }
 
   function render() {
+    $('#searchBar').hidden = state.tab !== 'watch';
+    if (state.tab !== 'watch') $('#searchResults').hidden = true;
     if (state.tab === 'portfolio') return renderPortfolio();
     renderListHead();
     const head = $('#catHead');
@@ -347,26 +351,31 @@
 
   /* ---------------------- 自选 ---------------------- */
 
+  const WATCH_ANALYZE_LIMIT = 12;
+
   async function renderWatch() {
     $('#catHead').hidden = false;
     $('#catTitle').textContent = '自选股';
     $('#catHeadline').textContent = state.watch.length
-      ? `共 ${state.watch.length} 只，填上你的成本价可以看到动态盈亏与卖出提示`
-      : '还没有自选股，在列表里点 ☆ 即可加入';
+      ? `共 ${state.watch.length} 只，每只都用和推荐列表同一套规则算技术面与资金面`
+      : '用上面的搜索框查股票，搜到了直接加进来';
     $('#catMethod').innerHTML =
-      '自选列表保存在本机浏览器里。填上买入成本后，程序会用当前价、ATR、均线重新计算止损位与卖出条件。';
+      '自选保存在本机。每只票都会算技术面 / 资金面评分（口径与「今日推荐」一致：技术面 60% + 资金面 40%），' +
+      '并给出买入区间、止损、目标价、建议仓位和卖出条件；填上成本价还能看浮动盈亏。';
 
     renderListHead();
     const list = $('#list');
     list.innerHTML = '';
+    renderSearchResults(state.search);
+
     if (!state.watch.length) {
-      list.appendChild(emptyNode('还没有自选股'));
+      list.appendChild(emptyNode('还没有自选股，上面搜一只加进来试试'));
       return;
     }
-    list.appendChild(loadingNode('正在拉取自选股行情…'));
+    list.appendChild(loadingNode('正在拉取自选股行情并计算…'));
 
     const results = await Promise.all(
-      state.watch.slice(0, 12).map((w) =>
+      state.watch.slice(0, WATCH_ANALYZE_LIMIT).map((w) =>
         api(`/api/stock/${w.code}`)
           .then((data) => ({ w, data }))
           .catch(() => ({ w, data: null })),
@@ -374,35 +383,72 @@
     );
     list.innerHTML = '';
     results.forEach(({ w, data }) => list.appendChild(renderWatchCard(w, data)));
+
+    if (state.watch.length > WATCH_ANALYZE_LIMIT) {
+      list.appendChild(
+        emptyNode(
+          `先分析前 ${WATCH_ANALYZE_LIMIT} 只，还有 ${state.watch.length - WATCH_ANALYZE_LIMIT} 只没展开（一次抓太多会明显变慢）`,
+        ),
+      );
+    }
   }
 
   function renderWatchCard(w, data) {
     const row = el('div', 'ev-card');
-    const q = (data && data.quote) || {};
-    const plan = (data && data.plan) || {};
+    const code = esc(w.code);
+    const nameAttr = escapeAttr(w.name || '');
+
+    if (!data) {
+      row.innerHTML =
+        `<div class="ev-top">
+           <span class="ev-name">${esc(w.name || w.code)} <span class="stock-code">${code}</span></span>
+           <button class="btn ghost watch-del" data-code="${code}" data-name="${nameAttr}">移出</button>
+         </div>
+         <div class="ev-impact">这只票暂时拉不到行情，稍后再刷新看看。</div>`;
+      row.querySelector('.watch-del').addEventListener('click', () => toggleWatch(w.code, w.name || ''));
+      return row;
+    }
+
+    const q = data.quote || {};
+    const plan = data.plan || {};
+    const v = data.verdict || {};
     const cost = Number(w.cost);
     const profit = Number.isFinite(cost) && cost > 0 && Number.isFinite(q.price)
       ? ((q.price - cost) / cost) * 100
       : null;
 
-    const sellHint = plan.sellRules && plan.sellRules.length ? plan.sellRules[0] : '暂无卖出信号';
+    const zone = plan.buyZone ? `${num(plan.buyZone.low)} - ${num(plan.buyZone.high)}` : '-';
+    const t1 = plan.targets && plan.targets[0] ? num(plan.targets[0].price) : '-';
+    const sellHint = (plan.sellRules && plan.sellRules[0]) || '暂无卖出信号';
+    const verdictCls = Number.isFinite(v.total) ? (v.total >= 60 ? 'hot' : v.total < 45 ? 'cold' : '') : '';
+    const reasons = (v.reasons || []).slice(0, 3);
+
     row.innerHTML =
       `<div class="ev-top">
-         <span class="ev-name">${w.name || q.name || w.code} <span class="stock-code">${w.code}</span></span>
+         <span class="ev-name">${esc(w.name || q.name || w.code)} <span class="stock-code">${code}</span></span>
          <span class="ev-date ${pctClass(q.changePct)}">${num(q.price)} ${pctText(q.changePct)}</span>
        </div>
        <div class="ev-meta">
+         ${Number.isFinite(v.total) ? `<span class="badge ${verdictCls}">评分 ${num(v.total, 1)} · ${esc(v.stance)}</span>` : ''}
+         ${Number.isFinite(v.tech) ? `<span class="badge">技术面 ${Math.round(v.tech)}</span>` : ''}
+         ${Number.isFinite(v.fund) ? `<span class="badge">资金面 ${Math.round(v.fund)}</span>` : ''}
          <span class="badge">成本
-           <input class="cost-input" data-code="${w.code}" value="${Number.isFinite(cost) ? cost : ''}"
+           <input class="cost-input" data-code="${code}" value="${Number.isFinite(cost) ? cost : ''}"
                   placeholder="填成本价" style="width:64px;background:#232a36;border:1px solid #2b3341;color:#e6e9ef;border-radius:4px;padding:1px 5px;font-size:11px" />
          </span>
          ${profit === null ? '' : `<span class="badge ${profit >= 0 ? 'hot' : 'cold'}">浮动盈亏 ${pctText(profit)}</span>`}
-         ${plan.stopLoss ? `<span class="badge cold">止损 ${plan.stopLoss}</span>` : ''}
-         ${plan.targets && plan.targets[0] ? `<span class="badge hot">目标 ${plan.targets[0].price}</span>` : ''}
-         <button class="btn ghost watch-del" data-code="${w.code}" data-name="${w.name || ''}">移出</button>
-         <button class="btn ghost watch-open" data-code="${w.code}">看图</button>
+         <button class="btn ghost watch-open" data-code="${code}">看图</button>
+         <button class="btn ghost watch-del" data-code="${code}" data-name="${nameAttr}">移出</button>
        </div>
-       <div class="ev-impact">卖出提示：${sellHint}</div>`;
+       <div class="ev-impact">
+         买入区间 ${zone} ｜ 止损 ${num(plan.stopLoss)} ｜ 目标 ${t1} ｜ 建议仓位 ${plan.positionPct || '-'}%<br />
+         卖出提示：${esc(sellHint)}
+       </div>
+       ${reasons.length
+         ? `<div class="analysis-line"><b>${esc(v.stanceText || '')}</b><br />${reasons
+             .map((r) => '· ' + esc(r))
+             .join('<br />')}</div>`
+         : ''}`;
 
     row.querySelector('.watch-del').addEventListener('click', () => toggleWatch(w.code, w.name || ''));
     row.querySelector('.watch-open').addEventListener('click', () => openDetail(w.code, null));
@@ -417,6 +463,102 @@
       }
     });
     return row;
+  }
+
+  /* ---------------------- 搜股票 ---------------------- */
+
+  let searchTimer = null;
+
+  function searchRow(item) {
+    const row = el('div', 'search-item');
+    const code = esc(item.code);
+    const watched = isWatched(item.code);
+    row.innerHTML =
+      `<div class="si-main" title="点击查看这只票的完整分析">
+         <span class="stock-name">${esc(item.name || item.code)}</span>
+         <span class="stock-code">${code}</span>
+         ${item.mainBoard ? '' : '<span class="tag">非主板</span>'}
+       </div>
+       <div class="si-num ${pctClass(item.changePct)}">${num(item.price)}<span class="sub">${pctText(item.changePct)}</span></div>
+       <button class="btn ${watched ? 'ghost' : 'primary'} si-add" ${watched ? 'disabled' : ''}>${watched ? '已在自选' : '加入自选'}</button>`;
+
+    row.querySelector('.si-main').addEventListener('click', () => openDetail(item.code, item));
+    row.querySelector('.si-add').addEventListener('click', () => {
+      if (isWatched(item.code)) return;
+      toggleWatch(item.code, item.name || item.code); // 内部会 render()，自选和按钮状态一起刷新
+    });
+    return row;
+  }
+
+  function renderSearchResults(data) {
+    const box = $('#searchResults');
+    if (!box) return;
+    if (!state.searchQ) {
+      box.hidden = true;
+      box.innerHTML = '';
+      return;
+    }
+    box.hidden = false;
+    const items = data && data.q === state.searchQ ? data.items || [] : [];
+    if (!items.length) {
+      box.innerHTML =
+        `<div class="search-empty">没找到「${esc(state.searchQ)}」。只支持 A 股：` +
+        '可以输代码（600519）、名称（贵州茅台）或拼音首字母（gzmt）。</div>';
+      return;
+    }
+    box.innerHTML = '';
+    items.forEach((it) => box.appendChild(searchRow(it)));
+  }
+
+  async function doSearch(q) {
+    state.searchQ = q;
+    const box = $('#searchResults');
+    if (!box) return;
+    if (!q) {
+      state.search = null;
+      box.hidden = true;
+      box.innerHTML = '';
+      return;
+    }
+
+    box.hidden = false;
+    box.innerHTML = '<div class="search-empty">搜索中…</div>';
+
+    let data = null;
+    try {
+      data = await api(`/api/search?q=${encodeURIComponent(q)}`);
+    } catch (err) {
+      if (state.searchQ !== q) return;
+      state.search = null;
+      box.innerHTML = `<div class="search-empty">搜索失败：${esc(err.message)}</div>`;
+      return;
+    }
+    if (state.searchQ !== q) return; // 关键词已经变了，丢弃这次结果
+    state.search = data;
+    renderSearchResults(data);
+  }
+
+  function initSearch() {
+    const input = $('#searchInput');
+    if (!input) return;
+    const run = () => doSearch(input.value.trim());
+    input.addEventListener('input', () => {
+      clearTimeout(searchTimer);
+      searchTimer = setTimeout(run, 350);
+    });
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        clearTimeout(searchTimer);
+        run();
+      } else if (e.key === 'Escape') {
+        input.value = '';
+        doSearch('');
+      }
+    });
+    $('#searchBtn').addEventListener('click', () => {
+      clearTimeout(searchTimer);
+      run();
+    });
   }
 
   /* ---------------------- 我的模拟盘 ---------------------- */
@@ -1436,6 +1578,7 @@
   }
 
   initUpdate();
+  initSearch();
 
   setStatus('准备中');
   loadOverview();

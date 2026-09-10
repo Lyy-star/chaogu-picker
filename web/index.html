@@ -50,6 +50,12 @@
     </section>
 
     <section class="list-wrap">
+      <div class="search-bar" id="searchBar" hidden>
+        <input id="searchInput" type="search" autocomplete="off" spellcheck="false"
+               placeholder="查股票：代码 / 名称 / 拼音首字母，例如 600519、贵州茅台、gzmt" />
+        <button class="btn" id="searchBtn">搜索</button>
+      </div>
+      <div class="search-results" id="searchResults" hidden></div>
       <div class="list-head" id="listHead"></div>
       <div class="list" id="list">
         <div class="loading">

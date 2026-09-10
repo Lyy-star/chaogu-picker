@@ -1168,11 +1168,44 @@ async function stockFundamentalSnapshot(code, options = {}) {
   }, { disk: false, ...options });
 }
 
+/* ------------------------------------------------------------------ */
+/* 搜索：代码 / 名称 / 拼音首字母                                        */
+/* ------------------------------------------------------------------ */
+
+const SUGGEST_API = 'https://searchapi.eastmoney.com/api/suggest/get';
+// 这是东方财富搜索框用的公开 token，不是账号密钥
+const SUGGEST_TOKEN = 'D43BF722C8E33BDC906FB84D85E326E8';
+
+/**
+ * 联想搜索。支持 6 位代码、中文名称、拼音首字母（如 gzmt）。
+ * 只保留 A 股（沪深北），过滤掉基金 / 债券 / 指数 / 港股美股。
+ */
+async function searchStocks(keyword, options = {}) {
+  const kw = String(keyword || '').trim();
+  if (!kw) return [];
+  return cached(`search_${kw.toLowerCase()}`, 10 * 60 * 1000, async () => {
+    const url =
+      `${SUGGEST_API}?input=${encodeURIComponent(kw)}&type=14&token=${SUGGEST_TOKEN}&count=20`;
+    const json = await getJSON(url);
+    const list = (json && json.QuotationCodeTable && json.QuotationCodeTable.Data) || [];
+    return list
+      .filter((r) => r && /^\d{6}$/.test(String(r.Code || '')) && String(r.Classify || '') === 'AStock')
+      .map((r) => ({
+        code: String(r.Code),
+        name: String(r.Name || ''),
+        pinyin: String(r.PinYin || ''),
+        secTypeName: String(r.SecurityTypeName || ''),
+        market: String(r.MktNum || ''),
+      }));
+  }, options);
+}
+
 module.exports = {
   toSecid,
   secidToCode,
   quote,
   quotesBatch,
+  searchStocks,
   marketOverview,
   marketClock,
   marketSnapshot,

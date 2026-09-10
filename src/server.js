@@ -13,6 +13,7 @@ const em = require('./data/eastmoney');
 const picker = require('./engine/picker');
 const eventsEngine = require('./engine/events');
 const fundamentalsEngine = require('./engine/fundamentals');
+const verdictEngine = require('./engine/verdict');
 const portfolio = require('./engine/portfolio');
 const mirror = require('./lib/mirror');
 const { cached, invalidate } = require('./lib/cache');
@@ -79,7 +80,7 @@ async function apiOverview() {
 }
 
 async function apiStock(code) {
-  const [quote, trends, k, flow, anns, news, fundamentals] = await Promise.all([
+  const [quote, trends, k, flow, anns, news, fundamentals, listRow] = await Promise.all([
     em.quote(code).catch(() => null),
     em.minuteTrends(code, 1).catch(() => null),
     em.kline(code, { limit: 160 }).catch(() => null),
@@ -87,9 +88,21 @@ async function apiStock(code) {
     em.announcements(1, 20, code).catch(() => []),
     em.stockNews(code, 8).catch(() => []),
     fundamentalsEngine.fundamentalDetail(code).catch(() => null),
+    // 列表型快照里带主力净流入 / 占比，用它给资金面打分
+    em
+      .quotesBatch([code])
+      .then((m) => m.get(String(code).padStart(6, '0')) || null)
+      .catch(() => null),
   ]);
   const bars = k && k.bars ? mergeLiveBar(k.bars, quote || {}) : null;
   const ctx = bars ? buildContext(bars, quote && quote.price) : null;
+  const flowLast = Array.isArray(flow) && flow.length ? flow[flow.length - 1] : null;
+  const verdict = verdictEngine.buildVerdict({
+    ctx,
+    quote,
+    mainNetIn: listRow ? listRow.mainNetIn : flowLast && flowLast.mainNetIn,
+    mainNetInPct: listRow ? listRow.mainNetInPct : null,
+  });
   return {
     code,
     quote,
@@ -100,11 +113,41 @@ async function apiStock(code) {
     announcements: anns,
     news,
     fundamentals,
+    verdict,
     // 给详情页一个"通用交易计划"（按情绪类风格，用户在详情页可切换视角）
     plan: ctx && quote
       ? buildPlan({ quote, ctx, category: 'sentiment', score: 65, extra: {} })
       : null,
     at: Date.now(),
+  };
+}
+
+/** 搜股票：代码 / 名称 / 拼音首字母，返回带实时价和主板标记的结果 */
+async function apiSearch(keyword) {
+  const q = String(keyword || '').trim();
+  if (!q) return { q, items: [] };
+
+  const found = await em.searchStocks(q).catch(() => []);
+  const items = found.slice(0, 12);
+  if (!items.length) return { q, items: [] };
+
+  const quotes = await em.quotesBatch(items.map((x) => x.code)).catch(() => new Map());
+  return {
+    q,
+    items: items.map((x) => {
+      const row = quotes.get(x.code) || {};
+      return {
+        code: x.code,
+        name: x.name || row.name || '',
+        pinyin: x.pinyin,
+        secTypeName: x.secTypeName,
+        mainBoard: picker.isMainBoard(x.code),
+        price: Number.isFinite(row.price) ? row.price : null,
+        changePct: Number.isFinite(row.changePct) ? row.changePct : null,
+        turnoverRate: Number.isFinite(row.turnoverRate) ? row.turnoverRate : null,
+        amount: Number.isFinite(row.amount) ? row.amount : null,
+      };
+    }),
   };
 }
 
@@ -194,6 +237,9 @@ async function handle(req, res) {
       }
       if (p === '/api/overview') {
         return sendJSON(res, { ok: true, data: await apiOverview() });
+      }
+      if (p === '/api/search') {
+        return sendJSON(res, { ok: true, data: await apiSearch(url.searchParams.get('q')) });
       }
       if (p === '/api/picks') {
         const force = url.searchParams.get('force') === '1';

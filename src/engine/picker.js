@@ -797,4 +797,5 @@ module.exports = {
   isMainBoard,
   passesBaseFilter,
   technicalScore,
+  fundScore,
 };
