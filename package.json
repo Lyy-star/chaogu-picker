@@ -1,6 +1,6 @@
 {
   "name": "chaogu-picker",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "A股主板选股桌面应用：情绪类 / 消息类 / 大事件类",
   "main": "src/main.js",

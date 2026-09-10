@@ -1,0 +1,47 @@
+name: Build
+
+# 这里只做「手动打包」，不再随 tag 自动发布。
+#
+# 为什么去掉 tag 触发：发布统一交给 E:\chaogu-publish 那套独立工具。
+# 之前 tag 一推上去，CI 就会拿「最后一次提交」的代码重新编译一遍并覆盖
+# 已经上传好的安装包，导致线上附件和你本地打的对不上。
+#
+# 用法：仓库 Actions 页面 → Build → Run workflow（产物作为 Artifact 下载，不发 Release）
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 生成图标（LYY 字标）
+        run: npm run icon
+
+      - name: 打包（不发 Release）
+        env:
+          ELECTRON_MIRROR: https://npmmirror.com/mirrors/electron/
+          ELECTRON_BUILDER_BINARIES_MIRROR: https://npmmirror.com/mirrors/electron-builder-binaries/
+        run: npm run dist:nopublish
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: chaogu-picker-windows
+          path: |
+            release/*.exe
+            release/*.blockmap
+            release/*.yml
+          if-no-files-found: warn
