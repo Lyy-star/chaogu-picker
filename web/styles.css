@@ -732,21 +732,17 @@ ul.risks li { margin-bottom: 6px; line-height: 1.65; }
 .mr-season span { font-size: 11.5px; color: var(--text-dim); }
 .mr-score { font-size: 11.5px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
 
-.zodiac-grid {
-  display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
-  gap: 8px; margin-top: 10px;
+.zodiac-tag {
+  background: rgba(240, 163, 58, .18); color: var(--warn);
+  border-radius: 4px; padding: 0 5px; font-size: 11.5px; cursor: help;
 }
-.zodiac-chip {
-  display: flex; align-items: center; gap: 8px; cursor: pointer;
-  padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px;
-  background: var(--bg-soft); font-size: 12.5px;
+.zodiac-note {
+  margin-top: 10px; padding: 9px 11px;
+  border-left: 2px solid var(--warn); border-radius: 6px;
+  background: rgba(240, 163, 58, .07);
+  color: var(--text-dim); font-size: 12.5px; line-height: 1.8;
 }
-.zodiac-chip:hover { border-color: var(--accent); }
-.zodiac-chip b {
-  display: inline-flex; align-items: center; justify-content: center;
-  width: 20px; height: 20px; border-radius: 5px;
-  background: var(--warn); color: #1a1f29; font-size: 12px; flex: 0 0 auto;
-}
+.zodiac-note b { color: var(--warn); }
 
 @media (max-width: 1180px) {
   .month-row { grid-template-columns: minmax(120px, 1.2fr) 90px minmax(150px, 1.4fr) 66px; }

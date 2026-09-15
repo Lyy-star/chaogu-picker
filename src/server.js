@@ -270,47 +270,63 @@ async function apiMonthly() {
 
     const thisAnimal = seasonalEngine.zodiacOf(year);
     const nextAnimal = seasonalEngine.zodiacOf(year + 1);
-    // 先按成交额定好生肖名单（要展示的就是这批），保证等一下抓的数据和展示的是同一批
-    const zodiacRows = seasonalEngine
+
+    // 今年的生肖候选（今年 + 明年的生肖字），按成交额取前一批
+    const zodiacNow = seasonalEngine
       .matchZodiac(rows, [thisAnimal, nextAnimal])
       .sort((a, b) => (b.amount || 0) - (a.amount || 0))
-      .slice(0, 16);
-    zodiacRows.forEach(add);
+      .slice(0, 8);
+
+    // 往年生肖（近 3 年）：拿来统计"炒在哪几个月"和"龙头长什么样"
+    const pastSets = [1, 2, 3].map((i) => {
+      const y = year - i;
+      const animal = seasonalEngine.zodiacOf(y);
+      return {
+        year: y,
+        animal,
+        rows: seasonalEngine
+          .matchZodiac(rows, [animal])
+          .sort((a, b) => (b.amount || 0) - (a.amount || 0))
+          .slice(0, 5),
+      };
+    });
 
     const fetchMonthly = async (c) => {
-      const k = await em.kline(c.code, { klt: 103, limit: 120 }).catch(() => null);
+      const k = await em.monthlyKline(c.code, 120).catch(() => null);
       return { ...c, bars: k && k.bars ? k.bars : null };
     };
 
-    // 生肖股先抓（数量有限），剩下的名额留给选股候选
-    const zodiacBars = await mapLimit(zodiacRows, 4, fetchMonthly);
-    const zodiacCodes = new Set(zodiacBars.map((x) => x.code));
+    const histTasks = pastSets.flatMap((p) =>
+      p.rows.map((r) => ({ ...r, year: p.year, animal: p.animal, kind: 'history' })));
+    const nowTasks = zodiacNow.map((r) => ({ ...r, kind: 'now' }));
+    const poolTasks = [...pool.values()].slice(0, 26).map((c) => ({ ...c, kind: 'pool' }));
 
-    const candidates = [...pool.values()].filter((c) => !zodiacCodes.has(c.code)).slice(0, 45);
-    const candidateBars = await mapLimit(candidates, 4, fetchMonthly);
+    const fetched = await mapLimit([...histTasks, ...nowTasks, ...poolTasks], 4, fetchMonthly);
+    const histSamples = fetched.filter((x) => x.kind === 'history');
+    const nowSamples = fetched.filter((x) => x.kind === 'now');
+    const usable = fetched.filter((x) => x.bars && x.bars.length);
 
-    const usable = [...zodiacBars, ...candidateBars].filter((x) => x.bars && x.bars.length);
-    const byCode = new Map(usable.map((x) => [x.code, x]));
-
-    const zodiac = zodiacRows
-      .map((z) => {
-        const w = byCode.get(z.code);
-        const season = w ? seasonalEngine.seasonOf(w.bars, month) : null;
+    const hypeWindow = seasonalEngine.hypeWindow(histSamples);
+    const leaderProfile = seasonalEngine.leaderProfile(histSamples);
+    const zodiacMatches = nowSamples
+      .filter((x) => x.bars && x.bars.length)
+      .map((x) => {
+        const scored = seasonalEngine.matchLeaderProfile(x, leaderProfile);
+        const season = seasonalEngine.seasonOf(x.bars, month);
         return {
-          code: z.code,
-          name: z.name,
-          price: z.price,
-          changePct: z.changePct,
-          amount: z.amount,
-          turnoverRate: z.turnoverRate,
-          zodiacChar: z.zodiacChar,
-          // 至少 2 年样本才展示，避免拿单年数据当"规律"
+          code: x.code,
+          name: x.name,
+          zodiacChar: x.zodiacChar,
+          price: x.price,
+          changePct: x.changePct,
+          amount: x.amount,
+          turnoverRate: x.turnoverRate,
+          score: scored.score,
+          reasons: scored.reasons,
           season: season && season.total >= 2 ? season : null,
-          seasonScore: seasonalEngine.seasonScore(season),
         };
       })
-      .sort((a, b) => (b.amount || 0) - (a.amount || 0))
-      .slice(0, 12);
+      .sort((a, b) => b.score - a.score);
 
     const monthName = seasonalEngine.MONTH_CN[month - 1];
     const nextName = seasonalEngine.MONTH_CN[nextMonth - 1];
@@ -322,7 +338,7 @@ async function apiMonthly() {
       nextMonth,
       monthName,
       nextMonthName: nextName,
-      candidates: candidates.length,
+      candidates: poolTasks.length,
       barsAvailable: usable.length,
       thisMonth: seasonalEngine.rankForMonth(usable, month, { limit: 12 }),
       next: seasonalEngine.rankForMonth(usable, nextMonth, { limit: 12 }),
@@ -331,12 +347,17 @@ async function apiMonthly() {
         yearNext: year + 1,
         thisAnimal,
         nextAnimal,
-        items: zodiac,
+        pastYears: pastSets.map((p) => ({ year: p.year, animal: p.animal, sample: p.rows.length })),
+        window: hypeWindow,
+        profile: leaderProfile,
+        matches: zodiacMatches,
       },
       notes: [
         `做法：候选股取近 10 年月线，统计它们在 ${monthName} 的历史平均涨跌和上涨年份占比，再和当前选股评分加权排序（季节性 65% + 当前评分 35%）。`,
         '样本不足 3 年的票不会列出来——样本太短的“规律”基本都是巧合。',
-        `生肖股那段是题材统计：名称里带「${thisAnimal}」（今年）或「${nextAnimal}」（明年）字的股票。市场近几年确实有年底炒来年生肖的习惯，但这类涨跌靠情绪和资金，和业绩没关系，别重仓。`,
+        `生肖只是月份里的备注：市场炒生肖一般集中在四季度到次年春节前，
+         我按近三年生肖股的月度表现统计出窗口月份，再用往年生肖龙头的特征（主要是启动价和活跃度）给今年的候选打分。
+         这类纯属题材炒作，涨跌靠情绪和资金，和业绩没关系，只适合小仓位试。`,
         '全部是历史统计，不构成投资建议；真要买，仍按交易计划的买入区间和止损执行。',
       ],
     };

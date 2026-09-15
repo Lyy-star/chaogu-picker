@@ -780,9 +780,10 @@
 
   const monthlyCache = { data: null, loading: false };
 
-  function monthRow(item, monthName) {
+  function monthRow(item, monthName, zodiacMap) {
     const row = el('div', 'month-row');
     const s = item.season || {};
+    const z = zodiacMap ? zodiacMap.get(item.code) : null;
     const bits = [];
     if (Number.isFinite(item.seasonScore)) bits.push(`季节 ${num(item.seasonScore, 1)}`);
     if (Number.isFinite(item.techScore)) bits.push(`当前 ${Math.round(item.techScore)}`);
@@ -792,6 +793,7 @@
       `<div class="mr-name clickable" title="点名称看完整分析">
          <span class="stock-name">${esc(item.name || item.code)}</span>
          <span class="stock-code">${esc(item.code)}</span>
+         ${z ? `<span class="tag zodiac-tag" title="${esc(`生肖股，按往年龙头特征匹配度 ${z.score}${(z.reasons || []).length ? '：' + z.reasons[0] : ''}`)}">${esc(z.zodiacChar)}</span>` : ''}
        </div>
        <div class="mr-price ${pctClass(item.changePct)}">${num(item.price)}
          <span class="sub">${pctText(item.changePct)}</span></div>
@@ -807,15 +809,58 @@
     return row;
   }
 
+  /** 生肖备注：只在月份区块里提一句，不单独占一块 */
+  function zodiacNoteHtml(d, monthLabel, inWindow) {
+    const z = d.zodiac || {};
+    const w = z.window || {};
+    const p = z.profile || {};
+    const matches = (z.matches || []).slice(0, 4);
+    const leaders = (p.leaders || []).slice(0, 3);
+    const bestMonths = (w.best || []).map((m) => m.name).join('、');
+    const lines = [];
+
+    lines.push(
+      `<b>生肖备注</b>（今年 ${esc(z.thisAnimal)} 年 / 明年 ${esc(z.nextAnimal)} 年）：` +
+        (bestMonths ? `近三年生肖股表现最好的是 ${esc(bestMonths)}` : '历史样本不足，还算不出窗口月份') +
+        (inWindow ? '，<b>现在正好在窗口里</b>' : `，${esc(monthLabel)}不在炒作窗口内，先记着就行`),
+    );
+
+    if (Number.isFinite(p.startPriceMedian)) {
+      lines.push(
+        `往年龙头特征：启动价中位数 ${p.startPriceMedian} 元` +
+          (Number.isFinite(p.gainMedian) ? `，窗口涨幅中位数 ${p.gainMedian}%` : '') +
+          (leaders.length
+            ? `；样本：${leaders.map((l) => `${l.year}${esc(l.animal)}年 ${esc(l.name)}（${l.gain > 0 ? '+' : ''}${l.gain}%）`).join('、')}`
+            : ''),
+      );
+    }
+
+    if (matches.length) {
+      lines.push(
+        `按这套特征筛出来、值得盯的：${matches
+          .map((m) => `${esc(m.name)}（匹配 ${m.score}${m.season ? `，该月历史 ${m.season.avgPct > 0 ? '+' : ''}${num(m.season.avgPct)}%` : ''}）`)
+          .join('、')}`,
+      );
+    } else {
+      lines.push('今年的生肖候选还没算出来（可能样本太少）');
+    }
+
+    return `<div class="zodiac-note">${lines.join('<br />')}</div>`;
+  }
+
   function renderMonthlyBody(list, d) {
-    const section = (title, sub, items) => {
+    const zodiacMap = new Map(((d.zodiac && d.zodiac.matches) || []).map((m) => [m.code, m]));
+    const winSet = new Set(((d.zodiac && d.zodiac.window && d.zodiac.window.windowMonths) || []));
+
+    const section = (title, sub, items, monthLabel, monthValue) => {
       const box = el('div', 'card month-card');
       box.innerHTML = `<h3>${title} <span class="badge">${sub}</span></h3>`;
       if (!items || !items.length) {
         box.appendChild(emptyNode('样本不足，暂时没有符合条件的票'));
       } else {
-        items.forEach((it) => box.appendChild(monthRow(it, d.monthName)));
+        items.forEach((it) => box.appendChild(monthRow(it, monthLabel, zodiacMap)));
       }
+      box.insertAdjacentHTML('beforeend', zodiacNoteHtml(d, monthLabel, winSet.has(monthValue)));
       list.appendChild(box);
       return box;
     };
@@ -824,35 +869,16 @@
       `本月（${d.monthName}）历史顺风股`,
       `候选 ${d.candidates} 只 · 有月线 ${d.barsAvailable} 只`,
       d.thisMonth,
+      d.monthName,
+      d.month,
     );
-    section(`下月（${d.nextMonthName}）提前布局`, '历史上这个月更容易涨的票', d.next);
-
-    const z = d.zodiac || {};
-    const zBox = el('div', 'card month-card');
-    zBox.innerHTML =
-      `<h3>生肖题材 <span class="badge">${esc(z.thisAnimal)}年（${z.year}） / ${esc(z.nextAnimal)}年（${z.yearNext}）</span></h3>
-       <div class="ev-impact">名称里带「${esc(z.thisAnimal)}」或「${esc(z.nextAnimal)}」的主板股，按成交额排序。
-         这几年市场确实有年底炒来年生肖的习惯，但这类涨跌靠情绪和资金，和业绩没关系，波动也大得多。</div>`;
-    if (!(z.items || []).length) {
-      zBox.appendChild(emptyNode('没有筛到名称带生肖的主板股'));
-    } else {
-      const grid = el('div', 'zodiac-grid');
-      z.items.forEach((it) => {
-        const chip = el('div', 'zodiac-chip');
-        chip.innerHTML =
-          `<b>${esc(it.zodiacChar)}</b>
-           <span class="stock-name">${esc(it.name)}</span>
-           <span class="stock-code">${esc(it.code)}</span>
-           <span class="${pctClass(it.changePct)}">${num(it.price)} ${pctText(it.changePct)}</span>
-           <span class="stock-code">${
-             it.season ? `${d.monthName}历史 ${it.season.avgPct > 0 ? '+' : ''}${num(it.season.avgPct)}%` : '上市太短，没样本'
-           }</span>`;
-        chip.addEventListener('click', () => openDetail(it.code, null));
-        grid.appendChild(chip);
-      });
-      zBox.appendChild(grid);
-    }
-    list.appendChild(zBox);
+    section(
+      `下月（${d.nextMonthName}）提前布局`,
+      '历史上这个月更容易涨的票',
+      d.next,
+      d.nextMonthName,
+      d.nextMonth,
+    );
 
     const noteBox = el('div', 'card month-card');
     noteBox.innerHTML = `<h3>这份推荐是怎么来的</h3><ul class="plain">${(d.notes || [])

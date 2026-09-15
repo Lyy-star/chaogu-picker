@@ -31,11 +31,11 @@ function num(v) {
 }
 
 /** 腾讯日线（前复权），返回与 eastmoney.kline 相同的结构 */
-async function tencentKline(code, limit = 250, period = 'day') {
+async function tencentKline(code, limit = 250, period = 'day', options = {}) {
   const symbol = toSymbol(code);
   const key = period === 'week' ? 'qfqweek' : period === 'month' ? 'qfqmonth' : 'qfqday';
   const url = `https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=${symbol},${period},,,${limit},qfq`;
-  const json = await getJSON(url, { timeout: 10000 });
+  const json = await getJSON(url, { timeout: 10000, ...options });
   const node = json && json.data && json.data[symbol];
   if (!node) throw new Error('腾讯日线无数据');
   const rows = node[key] || node[period] || [];

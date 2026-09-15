@@ -454,6 +454,73 @@ async function kline(code, { klt = 101, limit = 250, fqt = 1 } = {}, options = {
   }, options);
 }
 
+/**
+ * 月线（季节性统计用）。
+ *
+ * 东方财富的月线接口在不少网络下会先超时 6 秒才失败，几十只票一起算就是几分钟，
+ * 所以这里反过来：先问腾讯（快且稳），失败了再退东方财富。月线一天只变一次，缓存 6 小时。
+ */
+let monthSource = 'tencent'; // 记住哪家的月线好用（两家都时不时抽风，别每次都白等一遍）
+let monthPrimaryFails = 0;
+
+async function monthlyKline(code, limit = 120, options = {}) {
+  const secid = toSecid(code);
+  return cached(`mkline_${secid}_${limit}`, 6 * 60 * 60 * 1000, async () => {
+    const viaTencent = () => backup.tencentKline(code, limit, 'month', { timeout: 4000 });
+    const viaEm = async () => {
+      const url =
+        `${PUSH2HIS}/stock/kline/get?ut=${UT}&secid=${secid}&klt=103&fqt=1&end=20500101&lmt=${limit}` +
+        '&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61';
+      const json = await emJSON(url, { timeout: 5000 });
+      const d = json && json.data;
+      if (!d || !(d.klines || []).length) throw new Error('东财月线为空');
+      return {
+        code: String(d.code || code),
+        name: String(d.name || ''),
+        source: '东方财富',
+        bars: (d.klines || []).map((line) => {
+          const p = String(line).split(',');
+          return {
+            date: p[0],
+            open: num(p[1]),
+            close: num(p[2]),
+            high: num(p[3]),
+            low: num(p[4]),
+            volume: num(p[5]),
+            amount: num(p[6]),
+          };
+        }),
+      };
+    };
+
+    const primary = monthSource === 'tencent' ? ['tencent', viaTencent] : ['em', viaEm];
+    const secondary = monthSource === 'tencent' ? ['em', viaEm] : ['tencent', viaTencent];
+
+    try {
+      const out = await primary[1]();
+      if (!out || !out.bars || !out.bars.length) throw new Error('月线为空');
+      monthPrimaryFails = 0;
+      return out;
+    } catch (errPrimary) {
+      // 首选连续失败两次就换另一家当首选，避免每次都白等一遍超时
+      monthPrimaryFails += 1;
+      if (monthPrimaryFails >= 2) {
+        monthSource = secondary[0];
+        monthPrimaryFails = 0;
+      }
+      try {
+        const out2 = await secondary[1]();
+        if (!out2 || !out2.bars || !out2.bars.length) throw new Error('月线为空');
+        monthSource = secondary[0];
+        monthPrimaryFails = 0;
+        return out2;
+      } catch (_) {
+        throw errPrimary;
+      }
+    }
+  }, options);
+}
+
 /** 指数日线（交易日历 + 大盘快照用）。东方财富不稳时自动切腾讯 / 新浪 */
 const INDEX_SECID = { '000001': '1.000001', '399001': '0.399001', '399006': '0.399006' };
 let indexKlineDownUntil = 0;
@@ -1218,6 +1285,7 @@ module.exports = {
   moneyFlowRank,
   minuteTrends,
   kline,
+  monthlyKline,
   indexKline,
   stockFlow,
   pool,
