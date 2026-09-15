@@ -241,9 +241,10 @@ button { font-family: inherit; }
 
 .star {
   background: none; border: none; cursor: pointer;
-  color: var(--text-faint); font-size: 14px; padding: 0 2px;
+  color: var(--text-faint); font-size: 21px; line-height: 1; padding: 0 4px;
 }
 .star.on { color: var(--warn); }
+.star:hover { color: var(--warn); }
 
 /* ---------------- 详情抽屉 ---------------- */
 .detail {
@@ -655,3 +656,57 @@ ul.risks li { margin-bottom: 6px; line-height: 1.65; }
   color: var(--text-dim, #97a1b3); font-size: 12.5px; line-height: 1.8;
 }
 .analysis-line b { color: var(--text, #e8ecf4); font-weight: 600; }
+
+/* ---------------------- 我的持仓 ---------------------- */
+
+.ev-name.clickable { cursor: pointer; }
+.ev-name.clickable:hover { color: var(--accent); }
+.hold-head {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.hold-head input, .hold-input {
+  background: #232a36; border: 1px solid #2b3341; color: var(--text);
+  border-radius: 5px; padding: 2px 6px; font-size: 12px; width: 86px;
+  font-variant-numeric: tabular-nums; font-family: inherit;
+}
+.hold-head input { width: 112px; padding: 6px 8px; font-size: 13px; }
+.hold-input:focus, .hold-head input:focus { outline: none; border-color: var(--accent); }
+.hold-inputs { margin-top: 6px; }
+
+/* 持仓提醒弹窗 */
+.alert-overlay {
+  position: fixed; inset: 0; z-index: 90;
+  background: rgba(6, 8, 12, .66);
+  display: flex; align-items: center; justify-content: center;
+  padding: 24px;
+}
+.alert-card {
+  width: min(560px, 100%); max-height: 82vh; overflow: auto;
+  background: var(--bg-card); border: 1px solid #b4543f;
+  border-radius: 14px; padding: 18px 20px 20px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, .5);
+}
+.alert-item { padding: 10px 0; border-top: 1px dashed var(--line); }
+.alert-item:first-child { border-top: none; }
+.ai-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.ai-line { margin-top: 6px; font-size: 12.5px; color: var(--text-dim); }
+.ai-line b { color: var(--text); font-size: 13px; }
+.alert-item .plain { margin: 6px 0 0; padding-left: 18px; }
+
+/* 历史规律：12 个月柱状条 */
+.month-strip {
+  display: grid; grid-template-columns: repeat(12, 1fr); gap: 4px;
+  align-items: end; margin: 10px 0 12px;
+}
+.month-cell { display: flex; flex-direction: column; align-items: center; gap: 3px; }
+.month-cell i {
+  display: block; width: 100%; min-height: 6px;
+  border-radius: 3px 3px 0 0; background: #39435a;
+}
+.month-cell i.up { background: var(--up); }
+.month-cell i.down { background: var(--down); }
+.month-cell span { font-size: 10.5px; color: var(--text-faint); }
+.month-cell b { font-size: 10.5px; font-variant-numeric: tabular-nums; }
+.month-cell b.up { color: var(--up); }
+.month-cell b.down { color: var(--down); }

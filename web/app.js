@@ -19,6 +19,11 @@
     detailCode: null,
     detailCache: new Map(),
     watch: loadWatch(),
+    holdings: loadHoldings(),
+    holdCash: loadHoldCash(),
+    holdingAdvice: null,
+    adviceKeys: {},
+    adviceReady: false,
     search: null,
     searchQ: '',
     loadingPicks: false,
@@ -118,6 +123,51 @@
     saveWatch();
     if (state.tab === 'watch') render();
     else refreshStars();
+  }
+
+  /* ---------------------- 我的持仓（真实持仓，存本机） ---------------------- */
+
+  function loadHoldings() {
+    try {
+      const list = JSON.parse(localStorage.getItem('chaogu.holdings') || '[]');
+      return Array.isArray(list) ? list : [];
+    } catch (_) {
+      return [];
+    }
+  }
+
+  function saveHoldings() {
+    localStorage.setItem('chaogu.holdings', JSON.stringify(state.holdings));
+  }
+
+  function loadHoldCash() {
+    const v = Number(localStorage.getItem('chaogu.holdCash'));
+    return Number.isFinite(v) && v > 0 ? v : 0;
+  }
+
+  function saveHoldCash() {
+    localStorage.setItem('chaogu.holdCash', String(state.holdCash || 0));
+  }
+
+  function isHeld(code) {
+    return state.holdings.some((h) => h.code === code);
+  }
+
+  function addHolding(code, name) {
+    if (isHeld(code)) return false;
+    state.holdings = [
+      ...state.holdings,
+      { code, name, shares: 0, cost: null, addedAt: Date.now() },
+    ];
+    saveHoldings();
+    return true;
+  }
+
+  function removeHolding(code, name) {
+    state.holdings = state.holdings.filter((h) => h.code !== code);
+    delete state.adviceKeys[code];
+    saveHoldings();
+    toast(`已移出持仓：${name || code}`);
   }
 
   function refreshStars() {
@@ -240,8 +290,13 @@
   }
 
   function render() {
-    $('#searchBar').hidden = state.tab !== 'watch';
-    if (state.tab !== 'watch') $('#searchResults').hidden = true;
+    const withSearch = state.tab === 'watch' || state.tab === 'holding';
+    $('#searchBar').hidden = !withSearch;
+    $('#searchBar').querySelector('input').placeholder = state.tab === 'holding'
+      ? '查股票：代码 / 名称 / 拼音首字母，加到持仓里我帮你盯着'
+      : '查股票：代码 / 名称 / 拼音首字母，例如 600519、贵州茅台、gzmt';
+    if (!withSearch) $('#searchResults').hidden = true;
+    $('#listHead').hidden = state.tab === 'holding';
     if (state.tab === 'portfolio') return renderPortfolio();
     renderListHead();
     const head = $('#catHead');
@@ -249,6 +304,7 @@
 
     if (state.tab === 'calendar') return renderCalendar();
     if (state.tab === 'watch') return renderWatch();
+    if (state.tab === 'holding') return renderHoldings();
 
     head.hidden = false;
     const cat = state.tab === 'top' ? null : state.picks && state.picks[state.tab];
@@ -425,7 +481,8 @@
 
     row.innerHTML =
       `<div class="ev-top">
-         <span class="ev-name">${esc(w.name || q.name || w.code)} <span class="stock-code">${code}</span></span>
+         <span class="ev-name clickable" title="点名称看完整分析">${esc(w.name || q.name || w.code)}
+           <span class="stock-code">${code}</span></span>
          <span class="ev-date ${pctClass(q.changePct)}">${num(q.price)} ${pctText(q.changePct)}</span>
        </div>
        <div class="ev-meta">
@@ -452,6 +509,7 @@
 
     row.querySelector('.watch-del').addEventListener('click', () => toggleWatch(w.code, w.name || ''));
     row.querySelector('.watch-open').addEventListener('click', () => openDetail(w.code, null));
+    row.querySelector('.ev-name').addEventListener('click', () => openDetail(w.code, null));
     const input = row.querySelector('.cost-input');
     input.addEventListener('change', () => {
       const item = state.watch.find((x) => x.code === w.code);
@@ -465,6 +523,258 @@
     return row;
   }
 
+  /* ---------------------- 我的持仓：页面 ---------------------- */
+
+  const HOLDING_POLL_MS = 60 * 1000;
+
+  function holdingCard(holding, item) {
+    const card = el('div', 'ev-card hold-card');
+    const code = esc(holding.code);
+    const quote = (item && item.quote) || {};
+    const plan = (item && item.plan) || {};
+    const adv = (item && item.advice) || {};
+    const shares = Number(holding.shares) || 0;
+    const cost = Number(holding.cost) || 0;
+    const price = Number(quote.price);
+    const profitPct = cost > 0 && Number.isFinite(price) ? ((price - cost) / cost) * 100 : null;
+    const marketValue = Number.isFinite(price) ? price * shares : 0;
+    const actionCls = adv.action === 'add' ? 'hot' : adv.action === 'trim' || adv.action === 'exit' ? 'cold' : '';
+    const zone = plan.buyZone ? `${num(plan.buyZone.low)} - ${num(plan.buyZone.high)}` : '-';
+    const moveWord = adv.action === 'add' ? '加仓' : '卖出';
+
+    card.innerHTML =
+      `<div class="ev-top">
+         <span class="ev-name clickable" title="点名称看完整分析">${esc(holding.name || quote.name || holding.code)}
+           <span class="stock-code">${code}</span></span>
+         <span class="ev-date ${pctClass(quote.changePct)}">${num(quote.price)} ${pctText(quote.changePct)}</span>
+       </div>
+       <div class="ev-meta">
+         ${adv.actionText ? `<span class="badge ${actionCls}">${esc(adv.actionText)}</span>` : ''}
+         ${adv.lot > 0 ? `<span class="badge ${actionCls}">${moveWord} ${adv.lot} 股 · 约 ${money(adv.amount)} 元</span>` : ''}
+         ${profitPct === null ? '' : `<span class="badge ${profitPct >= 0 ? 'hot' : 'cold'}">浮动盈亏 ${pctText(profitPct)}</span>`}
+         <span class="badge">市值 ${money(marketValue)}</span>
+       </div>
+       <div class="ev-meta hold-inputs">
+         <span class="badge">持股 <input class="hold-input hold-shares" type="number" min="0" step="100"
+                value="${shares || ''}" placeholder="0" /> 股</span>
+         <span class="badge">成本 <input class="hold-input hold-cost" type="number" min="0" step="0.01"
+                value="${cost || ''}" placeholder="买入均价" /> 元</span>
+         <button class="btn ghost hold-open">看图</button>
+         <button class="btn ghost hold-del">移出持仓</button>
+       </div>
+       <div class="ev-impact">
+         买入区间 ${zone} ｜ 止损 ${num(plan.stopLoss)} ｜
+         目标 ${plan.targets && plan.targets[0] ? num(plan.targets[0].price) : '-'} ｜ 建议仓位上限 ${plan.positionPct || '-'}%
+       </div>
+       ${(adv.reasons || []).length
+         ? `<div class="analysis-line">${(adv.reasons || []).slice(0, 3).map((r) => '· ' + esc(r)).join('<br />')}</div>`
+         : ''}`;
+
+    card.querySelector('.ev-name').addEventListener('click', () => openDetail(holding.code, null));
+    card.querySelector('.hold-open').addEventListener('click', () => openDetail(holding.code, null));
+    card.querySelector('.hold-del').addEventListener('click', () => {
+      removeHolding(holding.code, holding.name);
+      render();
+    });
+
+    const sharesInput = card.querySelector('.hold-shares');
+    const costInput = card.querySelector('.hold-cost');
+    const saveField = () => {
+      const target = state.holdings.find((h) => h.code === holding.code);
+      if (!target) return;
+      target.shares = Math.max(0, Math.round(Number(sharesInput.value) || 0));
+      target.cost = Number(costInput.value) > 0 ? Number(costInput.value) : null;
+      saveHoldings();
+      toast(`${holding.name || holding.code} 持仓已保存`);
+      refreshHoldingAdvice({ notify: false }).then(() => {
+        if (state.tab === 'holding') render();
+      });
+    };
+    sharesInput.addEventListener('change', saveField);
+    costInput.addEventListener('change', saveField);
+    return card;
+  }
+
+  async function renderHoldings() {
+    $('#catHead').hidden = false;
+    $('#catTitle').textContent = '我的持仓';
+    $('#catHeadline').textContent = state.holdings.length
+      ? `共 ${state.holdings.length} 只，盘中每分钟按分时价和交易计划帮你盯着加仓 / 卖出点`
+      : '用上面的搜索框查股票，加到持仓里，我来帮你盯买卖点';
+    $('#catMethod').innerHTML =
+      '持仓记在本机。填上<b>持股数和成本</b>，再填一下<b>可用资金</b>，' +
+      '我会用实时价 + 分时均价 + 交易计划（买入区间 / 止损 / 目标位）判断现在该加仓、减仓还是止损，' +
+      '并算出具体多少股、大概多少钱。触发条件时会弹窗 + 响一下提醒你。' +
+      '<br><br><b>免责声明：</b>所有判断都是规则化推算，不是投资建议，买卖自己负责。';
+
+    const list = $('#list');
+    list.innerHTML = '';
+    renderSearchResults(state.search);
+
+    const head = el('div', 'hold-head');
+    head.innerHTML =
+      `<span class="badge">可用资金 <input id="holdCashInput" type="number" min="0" step="1000"
+          value="${state.holdCash || ''}" placeholder="例如 50000" /> 元</span>
+       <button class="btn" id="holdCheckBtn">立即检查一次</button>
+       <button class="btn ghost" id="holdRefreshBtn">刷新行情</button>
+       <span class="stock-code" id="holdCheckedAt">${state.holdingAdvice ? `上次检查 ${new Date(state.holdingAdvice.at).toLocaleTimeString('zh-CN', { hour12: false })}` : ''}</span>`;
+    list.appendChild(head);
+
+    const cashInput = head.querySelector('#holdCashInput');
+    cashInput.addEventListener('change', () => {
+      state.holdCash = Math.max(0, Number(cashInput.value) || 0);
+      saveHoldCash();
+      toast('可用资金已保存');
+      refreshHoldingAdvice({ notify: false }).then(() => {
+        if (state.tab === 'holding') render();
+      });
+    });
+
+    head.querySelector('#holdRefreshBtn').addEventListener('click', async () => {
+      await refreshHoldingAdvice({ notify: false, force: true });
+      if (state.tab === 'holding') render();
+    });
+    head.querySelector('#holdCheckBtn').addEventListener('click', async () => {
+      head.querySelector('#holdCheckBtn').disabled = true;
+      const data = await refreshHoldingAdvice({ notify: false, force: true });
+      head.querySelector('#holdCheckBtn').disabled = false;
+      const alerts = (data && data.items ? data.items : [])
+        .filter((x) => x.advice && x.advice.level === 'alert')
+        .map((x) => ({ code: x.code, name: x.name, ...x.advice }));
+      if (alerts.length) showAlert(alerts, '手动检查结果');
+      else toast('现在没有需要动手的信号');
+      if (state.tab === 'holding') render();
+    });
+
+    if (!state.holdings.length) {
+      list.appendChild(emptyNode('还没有持仓，上面搜一只加进来试试'));
+      return;
+    }
+
+    if (!state.holdingAdvice) {
+      list.appendChild(loadingNode('正在按分时价和计划算建议…'));
+      await refreshHoldingAdvice({ notify: false, first: true });
+      if (state.tab !== 'holding') return;
+      list.innerHTML = '';
+      list.appendChild(head);
+    }
+
+    const map = new Map((state.holdingAdvice && state.holdingAdvice.items ? state.holdingAdvice.items : [])
+      .map((x) => [x.code, x]));
+    state.holdings.forEach((h) => list.appendChild(holdingCard(h, map.get(h.code))));
+  }
+
+  /* ---------------------- 持仓提醒（弹窗 + 提示声） ---------------------- */
+
+  async function refreshHoldingAdvice({ notify = true, force = false, first = false } = {}) {
+    if (!state.holdings.length) {
+      state.holdingAdvice = null;
+      return null;
+    }
+    let data = null;
+    try {
+      data = await api('/api/holdings/advice', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          cash: state.holdCash,
+          items: state.holdings.map((h) => ({ code: h.code, shares: h.shares, cost: h.cost })),
+        }),
+      });
+    } catch (err) {
+      if (!notify) return null;
+      toast(`持仓行情拉取失败：${err.message}`);
+      return null;
+    }
+
+    state.holdingAdvice = data;
+    const alerts = [];
+    for (const it of data.items || []) {
+      const adv = it.advice || {};
+      const key = `${it.code}:${adv.action}:${adv.lot}`;
+      const changed = state.adviceKeys[it.code] !== key;
+      state.adviceKeys[it.code] = key;
+      if (changed && adv.level === 'alert') {
+        alerts.push({ code: it.code, name: it.name, ...adv });
+      }
+    }
+
+    const firstRun = first || !state.adviceReady;
+    state.adviceReady = true;
+    if (force && alerts.length) showAlert(alerts, '持仓提醒');
+    else if (!firstRun && notify && alerts.length) showAlert(alerts, '持仓提醒');
+    return data;
+  }
+
+  function beep() {
+    try {
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      if (!Ctx) return;
+      if (!beep._ctx) beep._ctx = new Ctx();
+      const ctx = beep._ctx;
+      if (ctx.state === 'suspended') ctx.resume();
+      const now = ctx.currentTime;
+      [0, 0.2].forEach((offset, i) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.value = i === 0 ? 880 : 1240;
+        gain.gain.setValueAtTime(0.0001, now + offset);
+        gain.gain.exponentialRampToValueAtTime(0.25, now + offset + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.0001, now + offset + 0.18);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(now + offset);
+        osc.stop(now + offset + 0.2);
+      });
+    } catch (_) {
+      /* 没声音也不能影响提醒 */
+    }
+  }
+
+  function showAlert(list, title) {
+    const overlay = $('#alertOverlay');
+    const body = $('#alertBody');
+    if (!overlay || !body) return;
+    $('#alertTitle').textContent = title || '持仓提醒';
+    body.innerHTML = list.map((a) => {
+      const isAdd = a.action === 'add';
+      return `<div class="alert-item">
+        <div class="ai-head">
+          <b>${esc(a.name || '')} <span class="stock-code">${esc(a.code)}</span></b>
+          <span class="badge ${isAdd ? 'hot' : 'cold'}">${esc(a.actionText || '')}</span>
+        </div>
+        <div class="ai-line">现价 ${num(a.price)}${
+          Number.isFinite(a.profitPct) ? ` ｜ 浮动盈亏 <span class="${pctClass(a.profitPct)}">${pctText(a.profitPct)}</span>` : ''
+        }</div>
+        ${a.lot > 0
+          ? `<div class="ai-line"><b>${isAdd ? '建议加仓' : '建议卖出'} ${a.lot} 股</b>（约 ${money(a.amount)} 元）</div>`
+          : ''}
+        <ul class="plain">${(a.reasons || []).slice(0, 3).map((r) => `<li>${esc(r)}</li>`).join('')}</ul>
+      </div>`;
+    }).join('');
+    overlay.hidden = false;
+    beep();
+    toast(`${list.length} 只持仓出现信号，点弹窗看详情`, 5000);
+  }
+
+  function isTradingTime(d = new Date()) {
+    const day = d.getDay();
+    if (day === 0 || day === 6) return false;
+    const m = d.getHours() * 60 + d.getMinutes();
+    return (m >= 9 * 60 + 15 && m <= 11 * 60 + 35) || (m >= 12 * 60 + 55 && m <= 15 * 60 + 5);
+  }
+
+  function initHoldingMonitor() {
+    const tick = async () => {
+      if (!state.holdings.length) return;
+      await refreshHoldingAdvice({ notify: isTradingTime() });
+      if (state.tab === 'holding') render();
+    };
+    setTimeout(() => { tick().catch(() => {}); }, 25 * 1000);
+    setInterval(() => { tick().catch(() => {}); }, HOLDING_POLL_MS);
+  }
+
   /* ---------------------- 搜股票 ---------------------- */
 
   let searchTimer = null;
@@ -472,7 +782,11 @@
   function searchRow(item) {
     const row = el('div', 'search-item');
     const code = esc(item.code);
-    const watched = isWatched(item.code);
+    const holdingMode = state.tab === 'holding';
+    const added = holdingMode ? isHeld(item.code) : isWatched(item.code);
+    const addText = holdingMode
+      ? (added ? '已在持仓' : '加入持仓')
+      : (added ? '已在自选' : '加入自选');
     row.innerHTML =
       `<div class="si-main" title="点击查看这只票的完整分析">
          <span class="stock-name">${esc(item.name || item.code)}</span>
@@ -480,12 +794,20 @@
          ${item.mainBoard ? '' : '<span class="tag">非主板</span>'}
        </div>
        <div class="si-num ${pctClass(item.changePct)}">${num(item.price)}<span class="sub">${pctText(item.changePct)}</span></div>
-       <button class="btn ${watched ? 'ghost' : 'primary'} si-add" ${watched ? 'disabled' : ''}>${watched ? '已在自选' : '加入自选'}</button>`;
+       <button class="btn ${added ? 'ghost' : 'primary'} si-add" ${added ? 'disabled' : ''}>${addText}</button>`;
 
     row.querySelector('.si-main').addEventListener('click', () => openDetail(item.code, item));
     row.querySelector('.si-add').addEventListener('click', () => {
-      if (isWatched(item.code)) return;
-      toggleWatch(item.code, item.name || item.code); // 内部会 render()，自选和按钮状态一起刷新
+      if (added) return;
+      if (holdingMode) {
+        addHolding(item.code, item.name || item.code);
+        toast(`已加入持仓：${item.name || item.code}，填上持股数和成本我就开始盯`);
+        state.searchQ = '';
+        $('#searchInput').value = '';
+        render();
+      } else {
+        toggleWatch(item.code, item.name || item.code); // 内部会 render()，自选和按钮状态一起刷新
+      }
     });
     return row;
   }
@@ -988,6 +1310,59 @@
     document.querySelectorAll('.row').forEach((r) => r.classList.remove('active'));
   }
 
+  const insightCache = new Map();
+
+  function insightHtml(d) {
+    if (!d || !d.ok) {
+      return `<div class="ev-impact">${esc((d && d.reason) || '历史数据不足，暂时算不出规律')}</div>`;
+    }
+
+    const strip = (d.months || []).map((m) => {
+      const v = Number(m.avgPct);
+      const cls = !m.total ? 'flat' : v >= 0.8 ? 'up' : v <= -0.8 ? 'down' : 'flat';
+      const h = Math.max(6, Math.min(40, Math.abs(v || 0) * 5 + 6));
+      const tip = m.total
+        ? `${m.name} 历史平均 ${v > 0 ? '+' : ''}${num(v)}%，${m.up}/${m.total} 年上涨`
+        : `${m.name} 样本不足`;
+      return `<div class="month-cell" title="${esc(tip)}">
+        <i class="${cls}" style="height:${h}px"></i><span>${m.month}</span>
+        <b class="${cls}">${m.total ? (v > 0 ? '+' : '') + num(v, 1) : '—'}</b>
+      </div>`;
+    }).join('');
+
+    const cur = d.current || {};
+    const next = d.next || {};
+    return `
+      <div class="kv-grid" style="margin-bottom:10px">
+        <div class="kv"><span class="k">样本区间</span><span>${esc(d.from)} ~ ${esc(d.to)}（${d.years} 年）</span></div>
+        <div class="kv"><span class="k">历史位置</span><span>${num(d.position && d.position.pct, 1)}% 分位</span></div>
+        <div class="kv"><span class="k">日均波动</span><span>${num(d.volatility && d.volatility.avgDailyMove)}%</span></div>
+        <div class="kv"><span class="k">本月 / 下月</span><span>${esc(cur.name || '-')} ${num(cur.avgPct)}% ｜ ${esc(
+          next.name || '-',
+        )} ${num(next.avgPct)}%</span></div>
+      </div>
+      <div class="month-strip">${strip}</div>
+      <ul class="plain">${(d.notes || []).map((n) => `<li>${esc(n)}</li>`).join('')}</ul>`;
+  }
+
+  async function loadInsight(code) {
+    let data = insightCache.get(code);
+    if (!data) {
+      try {
+        data = await api(`/api/insight/${code}`);
+        insightCache.set(code, data);
+      } catch (err) {
+        const box = document.getElementById('insightBody');
+        if (box && state.detailCode === code) box.innerHTML = `历史规律加载失败：${esc(err.message)}`;
+        return;
+      }
+    }
+    const box = document.getElementById('insightBody');
+    if (!box || state.detailCode !== code) return;
+    box.classList.remove('ev-impact');
+    box.innerHTML = insightHtml(data);
+  }
+
   function renderDetail(inner, code, item, data) {
     inner.innerHTML = '';
     const q = data.quote || {};
@@ -1063,6 +1438,14 @@
     } else {
       inner.appendChild(el('div', 'card', '<h3>交易计划</h3><div class="ev-impact">数据不足，无法生成计划</div>'));
     }
+
+    /* 我的看法：历史规律（异步统计，不挡其他内容） */
+    const insightCard = el('div', 'card');
+    insightCard.innerHTML =
+      '<h3>我的看法（历史规律） <span class="badge">按历史日线统计</span></h3>' +
+      '<div id="insightBody" class="ev-impact">正在统计这只票的历史季节性…</div>';
+    inner.appendChild(insightCard);
+    loadInsight(code);
 
     /* 分时 */
     const trendCard = el('div', 'card');
@@ -1579,6 +1962,12 @@
 
   initUpdate();
   initSearch();
+  initHoldingMonitor();
+
+  $('#alertCloseBtn').addEventListener('click', () => { $('#alertOverlay').hidden = true; });
+  $('#alertOverlay').addEventListener('click', (e) => {
+    if (e.target === $('#alertOverlay')) $('#alertOverlay').hidden = true;
+  });
 
   setStatus('准备中');
   loadOverview();

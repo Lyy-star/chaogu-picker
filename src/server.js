@@ -14,9 +14,12 @@ const picker = require('./engine/picker');
 const eventsEngine = require('./engine/events');
 const fundamentalsEngine = require('./engine/fundamentals');
 const verdictEngine = require('./engine/verdict');
+const holdingEngine = require('./engine/holding');
+const insightEngine = require('./engine/insight');
 const portfolio = require('./engine/portfolio');
 const mirror = require('./lib/mirror');
 const { cached, invalidate } = require('./lib/cache');
+const { mapLimit } = require('./lib/http');
 const { buildContext, mergeLiveBar } = require('./engine/indicators');
 const { buildPlan } = require('./engine/strategy');
 
@@ -151,6 +154,86 @@ async function apiSearch(keyword) {
   };
 }
 
+/**
+ * 持仓批量建议：一次把用户所有持仓的"现在该做什么"算出来。
+ * 前端每隔一分钟拿它做提醒，所以这里尽量走缓存、批量报价。
+ */
+async function apiHoldingsAdvice(body = {}) {
+  const rawItems = Array.isArray(body.items) ? body.items : [];
+  const cash = Number(body.cash) || 0;
+  const addRatio = Number(body.addRatio) || 0.3;
+  const items = rawItems
+    .filter((x) => x && /^\d{6}$/.test(String(x.code)))
+    .slice(0, 30)
+    .map((x) => ({
+      code: String(x.code),
+      shares: Math.max(0, Math.round(Number(x.shares) || 0)),
+      cost: Number(x.cost) > 0 ? Number(x.cost) : null,
+    }));
+
+  if (!items.length) return { at: Date.now(), cash, items: [] };
+
+  const quotes = await em.quotesBatch(items.map((x) => x.code)).catch(() => new Map());
+
+  const out = await mapLimit(items, 3, async (item) => {
+    const [quote, k, trends, listRow] = await Promise.all([
+      em.quote(item.code).catch(() => null),
+      em.kline(item.code, { limit: 160 }).catch(() => null),
+      em.minuteTrends(item.code, 1).catch(() => null),
+      Promise.resolve(quotes.get(item.code) || null),
+    ]);
+    const q = quote || listRow || null;
+    const bars = k && k.bars ? mergeLiveBar(k.bars, q || {}) : null;
+    const ctx = bars ? buildContext(bars, q && q.price) : null;
+    const plan = ctx && q ? buildPlan({ quote: q, ctx, category: 'sentiment', score: 65, extra: {} }) : null;
+    const verdict = verdictEngine.buildVerdict({
+      ctx,
+      quote: q,
+      mainNetIn: listRow ? listRow.mainNetIn : null,
+      mainNetInPct: listRow ? listRow.mainNetInPct : null,
+    });
+    const advice = holdingEngine.buildAdvice({
+      quote: q,
+      ctx,
+      plan,
+      verdict,
+      trends,
+      shares: item.shares,
+      cost: item.cost,
+      cash,
+      addRatio,
+    });
+    return {
+      code: item.code,
+      name: (q && q.name) || (k && k.name) || '',
+      shares: item.shares,
+      cost: item.cost,
+      quote: q,
+      tech: ctx,
+      plan,
+      verdict,
+      advice,
+    };
+  });
+
+  return { at: Date.now(), cash, items: out };
+}
+
+/** 历史规律（详情页的"我的看法"）：用长周期日线做季节性统计 */
+async function apiInsight(code) {
+  return cached(`insight_${code}`, 12 * 60 * 60 * 1000, async () => {
+    const [k, quote] = await Promise.all([
+      em.kline(code, { klt: 101, limit: 1800 }).catch(() => null),
+      em.quote(code).catch(() => null),
+    ]);
+    const result = insightEngine.analyze(k && k.bars, {
+      name: (k && k.name) || (quote && quote.name) || '',
+      price: quote && quote.price,
+    });
+    return { code, klineSource: (k && k.source) || null, bars: k && k.bars ? k.bars.length : 0, ...result };
+  }, { allowStale: true });
+}
+
 function apiEvents() {
   return cached('events_list', 5 * 60 * 1000, async () => {
     const [news, boardsChange, boardsFlow] = await Promise.all([
@@ -240,6 +323,14 @@ async function handle(req, res) {
       }
       if (p === '/api/search') {
         return sendJSON(res, { ok: true, data: await apiSearch(url.searchParams.get('q')) });
+      }
+      if (p === '/api/holdings/advice') {
+        const body = req.method === 'POST' ? await readBody(req) : {};
+        return sendJSON(res, { ok: true, data: await apiHoldingsAdvice(body) });
+      }
+      const insightMatch = p.match(/^\/api\/insight\/(\d{6})$/);
+      if (insightMatch) {
+        return sendJSON(res, { ok: true, data: await apiInsight(insightMatch[1]) });
       }
       if (p === '/api/picks') {
         const force = url.searchParams.get('force') === '1';
