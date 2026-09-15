@@ -727,6 +727,10 @@ ul.risks li { margin-bottom: 6px; line-height: 1.65; }
   padding: 9px 0; border-top: 1px dashed var(--line);
 }
 .month-row:first-of-type { border-top: none; }
+.month-row-head {
+  color: var(--text-faint); font-size: 11.5px; font-weight: 400;
+  border-top: none; padding: 2px 0 6px;
+}
 .mr-name { display: flex; align-items: baseline; gap: 8px; cursor: pointer; }
 .mr-name:hover .stock-name { color: var(--accent); }
 .mr-price { font-variant-numeric: tabular-nums; }

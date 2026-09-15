@@ -296,7 +296,10 @@
       ? '查股票：代码 / 名称 / 拼音首字母，加到持仓里我帮你盯着'
       : '查股票：代码 / 名称 / 拼音首字母，例如 600519、贵州茅台、gzmt';
     if (!withSearch) $('#searchResults').hidden = true;
-    $('#listHead').hidden = state.tab === 'holding';
+    // 只有"今日推荐 / 四类"这些用表格行渲染的页签才需要那套表头；
+    // 自选 / 持仓 / 月度推荐 / 事件日历都是卡片，挂上去会和内容对不上。
+    const rowTabs = ['top', 'sentiment', 'news', 'event', 'fundamental'];
+    $('#listHead').hidden = !rowTabs.includes(state.tab);
     if (state.tab === 'portfolio') return renderPortfolio();
     renderListHead();
     const head = $('#catHead');
@@ -901,7 +904,15 @@
     });
 
     const box = el('div', 'card month-card');
-    box.innerHTML = `<h3>${label} 历史顺风股 <span class="badge">季节性 65% + 当前评分 35%</span></h3>`;
+    box.innerHTML =
+      `<h3>${label} 历史顺风股 <span class="badge">季节性 65% + 当前评分 35%</span></h3>
+       <div class="month-row month-row-head">
+         <div>股票</div>
+         <div>现价 / 涨跌</div>
+         <div>该月历史表现</div>
+         <div>季节 / 当前 / 综合</div>
+         <div></div>
+       </div>`;
     if (!items.length) {
       box.appendChild(emptyNode('这个月的历史样本不足，暂时没有符合条件的票'));
     } else {
