@@ -15,6 +15,29 @@ const { monthlyReturns, monthSummary } = require('./insight');
 const MONTH_CN = ['1月', '2月', '3月', '4月', '5月', '6月', '7月', '8月', '9月', '10月', '11月', '12月'];
 const ZODIAC = ['鼠', '牛', '虎', '兔', '龙', '蛇', '马', '羊', '猴', '鸡', '狗', '猪'];
 
+/**
+ * 正主字 + 市场炒过的谐音字。
+ * 例：羊年除了「羊」，市场还会顺带炒「阳 / 洋 / 扬」；马年炒「马 / 码」。
+ */
+const HOMOPHONE = {
+  鼠: ['鼠', '数'],
+  牛: ['牛', '纽'],
+  虎: ['虎', '琥'],
+  兔: ['兔', '图'],
+  龙: ['龙', '隆'],
+  蛇: ['蛇', '佘'],
+  马: ['马', '码'],
+  羊: ['羊', '阳', '洋', '扬', '牧'],
+  猴: ['猴', '侯'],
+  鸡: ['鸡', '吉'],
+  狗: ['狗', '苟'],
+  猪: ['猪', '朱'],
+};
+
+function zodiacChars(animal) {
+  return HOMOPHONE[animal] || [animal];
+}
+
 /** 公历年份对应的生肖（2026 -> 马） */
 function zodiacOf(year) {
   const idx = (((Number(year) - 4) % 12) + 12) % 12;
@@ -163,11 +186,20 @@ function leaderProfile(samples, { topPerYear = 3 } = {}) {
   const byYear = new Map();
   for (const s of samples || []) {
     const start = closeAt(s.bars, s.year - 1, 10);
+    const pre = closeAt(s.bars, s.year - 1, 4);
     const end = closeAt(s.bars, s.year, 2);
     if (!start || !end) continue;
     const gain = ((end - start) / start) * 100;
     const list = byYear.get(s.year) || [];
-    list.push({ year: s.year, animal: s.animal, code: s.code, name: s.name, startPrice: round(start), gain: round(gain, 1) });
+    list.push({
+      year: s.year,
+      animal: s.animal,
+      code: s.code,
+      name: s.name,
+      startPrice: round(start),
+      gain: round(gain, 1),
+      preGain: pre ? round(((start - pre) / pre) * 100, 1) : null,
+    });
     byYear.set(s.year, list);
   }
 
@@ -180,6 +212,7 @@ function leaderProfile(samples, { topPerYear = 3 } = {}) {
   const prices = leaders.map((x) => x.startPrice).filter(Number.isFinite);
   const gains = leaders.map((x) => x.gain).filter(Number.isFinite);
   const gainsPos = gains.filter((g) => g > 0).length;
+  const preGains = leaders.map((x) => x.preGain).filter(Number.isFinite);
 
   return {
     leaders,
@@ -187,7 +220,112 @@ function leaderProfile(samples, { topPerYear = 3 } = {}) {
     startPriceMedian: prices.length ? round(prices.sort((a, b) => a - b)[Math.floor(prices.length / 2)]) : null,
     startPriceMax: prices.length ? round(Math.max(...prices)) : null,
     gainMedian: gains.length ? round(gains.sort((a, b) => a - b)[Math.floor(gains.length / 2)], 1) : null,
+    // 启动前半年涨幅：龙头在起爆前大多是横盘的
+    preGainMedian: preGains.length
+      ? round(preGains.sort((a, b) => a - b)[Math.floor(preGains.length / 2)], 1)
+      : null,
     leaderHitRate: gains.length ? round((gainsPos / gains.length) * 100, 0) : null,
+  };
+}
+
+/** 近 N 个月涨幅（用月线算，判断"有没有已经启动"） */
+function recentGain(bars, months = 3) {
+  const arr = (bars || []).filter((b) => Number.isFinite(b.close));
+  if (arr.length < months + 1) return null;
+  const last = arr[arr.length - 1].close;
+  const base = arr[arr.length - 1 - months].close;
+  if (!base) return null;
+  return round(((last - base) / base) * 100, 1);
+}
+
+/**
+ * 埋伏打分（0-100）。
+ *
+ * 生肖是纯情绪票，所以这里不看基本面，只看"资金好不好拉、有没有已经炒过"：
+ * 正主名字 > 谐音名字；低价、小市值、近几个月没启动、盘面安静 = 适合潜伏。
+ */
+function ambushScore(row, profile, { type = 'main', gain3m = null } = {}) {
+  const reasons = [];
+  const risks = [];
+  let score = 38;
+
+  if (type === 'main') {
+    score += 24;
+    reasons.push(`名称里直接带「${row.zodiacChar}」字，是这类题材的正主`);
+  } else if (type === 'homophone') {
+    score += 10;
+    reasons.push(`名称里带谐音字「${row.zodiacChar}」，往年市场也炒过谐音，确定性低一档`);
+  } else if (type === 'current') {
+    score += 6;
+    reasons.push(`属于今年（${row.animal || ''}年）的生肖股，行情窗口还没走完`);
+  }
+
+  const price = Number(row.price);
+  const median = Number(profile && profile.startPriceMedian);
+  if (Number.isFinite(price) && Number.isFinite(median)) {
+    if (price <= median) {
+      score += 16;
+      reasons.push(`现价 ${round(price)} 元，低于往年龙头启动价中位数（${median} 元），拉起来省资金`);
+    } else if (price <= median * 1.5) {
+      score += 6;
+      reasons.push(`现价 ${round(price)} 元，接近往年龙头的启动价（中位数 ${median} 元）`);
+    } else {
+      score -= 10;
+      risks.push(`现价 ${round(price)} 元明显高于往年龙头启动价（${median} 元），埋伏性价比差`);
+    }
+  }
+
+  const cap = Number(row.floatCap);
+  if (Number.isFinite(cap)) {
+    const yi = cap / 1e8;
+    if (yi <= 50) {
+      score += 14;
+      reasons.push(`流通市值只有 ${yi.toFixed(0)} 亿，小盘票一点资金就能拉动`);
+    } else if (yi <= 120) {
+      score += 5;
+      reasons.push(`流通市值 ${yi.toFixed(0)} 亿，盘子适中`);
+    } else {
+      score -= 12;
+      risks.push(`流通市值 ${yi.toFixed(0)} 亿偏大，纯题材很难撬动`);
+    }
+  }
+
+  // 优先用月线算出来的近 3 个月涨幅；没有月线就用快照里的 60 日涨跌幅
+  const gain = Number.isFinite(gain3m)
+    ? gain3m
+    : (Number.isFinite(Number(row.change60Pct)) ? Number(row.change60Pct) : null);
+  const gainLabel = Number.isFinite(gain3m) ? '近 3 个月' : '近 60 个交易日';
+
+  if (Number.isFinite(gain)) {
+    if (gain <= 10) {
+      score += 12;
+      reasons.push(`${gainLabel}只涨了 ${round(gain)}%，还没启动，正适合潜伏`);
+    } else if (gain <= 30) {
+      score += 3;
+      reasons.push(`${gainLabel}涨了 ${round(gain)}%，已经有点动静`);
+    } else {
+      score -= 14;
+      risks.push(`${gainLabel}已经涨了 ${round(gain)}%，第一波可能炒完了，再进就是接棒`);
+    }
+  }
+
+  const turnover = Number(row.turnoverRate);
+  if (Number.isFinite(turnover)) {
+    if (turnover <= 3) {
+      score += 8;
+      reasons.push(`换手率 ${round(turnover)}%，盘面还很安静，没人抢筹`);
+    } else if (turnover <= 10) {
+      score += 2;
+    } else {
+      score -= 8;
+      risks.push(`换手率 ${round(turnover)}%，已经热闹起来了，埋伏成本变高`);
+    }
+  }
+
+  return {
+    score: Math.max(0, Math.min(100, Math.round(score))),
+    reasons: reasons.slice(0, 4),
+    risks: risks.slice(0, 2),
   };
 }
 
@@ -246,6 +384,7 @@ function matchLeaderProfile(candidate, profile, { price } = {}) {
 
 module.exports = {
   zodiacOf,
+  zodiacChars,
   seasonScore,
   seasonOf,
   rankForMonth,
@@ -253,6 +392,8 @@ module.exports = {
   hypeWindow,
   leaderProfile,
   matchLeaderProfile,
+  recentGain,
+  ambushScore,
   closeAt,
   MONTH_CN,
   ZODIAC,

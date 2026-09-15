@@ -793,7 +793,14 @@
       `<div class="mr-name clickable" title="点名称看完整分析">
          <span class="stock-name">${esc(item.name || item.code)}</span>
          <span class="stock-code">${esc(item.code)}</span>
-         ${z ? `<span class="tag zodiac-tag" title="${esc(`生肖股，按往年龙头特征匹配度 ${z.score}${(z.reasons || []).length ? '：' + z.reasons[0] : ''}`)}">${esc(z.zodiacChar)}</span>` : ''}
+         ${z
+           ? `<span class="tag zodiac-tag ${z.type === 'main' ? 'main' : z.type === 'homophone' ? 'homo' : 'cur'}"
+                    title="${esc(
+                      `生肖股（${z.type === 'main' ? '正主' : z.type === 'homophone' ? '谐音扩展' : '今年生肖'}）` +
+                        `，埋伏匹配度 ${z.score}${(z.reasons || []).length ? '：' + z.reasons[0] : ''}` +
+                        `${(z.risks || []).length ? '｜风险：' + z.risks[0] : ''}`,
+                    )}">${esc(z.zodiacChar)}</span>`
+           : ''}
        </div>
        <div class="mr-price ${pctClass(item.changePct)}">${num(item.price)}
          <span class="sub">${pctText(item.changePct)}</span></div>
@@ -814,42 +821,62 @@
     const z = d.zodiac || {};
     const w = z.window || {};
     const p = z.profile || {};
-    const matches = (z.matches || []).slice(0, 4);
-    const leaders = (p.leaders || []).slice(0, 3);
+    const ambush = z.ambush || [];
     const bestMonths = (w.best || []).map((m) => m.name).join('、');
     const lines = [];
 
     lines.push(
-      `<b>生肖备注</b>（今年 ${esc(z.thisAnimal)} 年 / 明年 ${esc(z.nextAnimal)} 年）：` +
-        (bestMonths ? `近三年生肖股表现最好的是 ${esc(bestMonths)}` : '历史样本不足，还算不出窗口月份') +
-        (inWindow ? '，<b>现在正好在窗口里</b>' : `，${esc(monthLabel)}不在炒作窗口内，先记着就行`),
+      `<b>生肖备注</b>（市场炒的是<b>明年</b>的 ${esc(z.nextAnimal)} 年 / ${z.yearNext}）：` +
+        (bestMonths ? `往年窗口集中在 ${esc(bestMonths)}` : '历史样本不足') +
+        (inWindow ? '，<b>现在正好在窗口里</b>' : `，${esc(monthLabel)}不在窗口内，属于提前埋伏期`),
     );
 
     if (Number.isFinite(p.startPriceMedian)) {
       lines.push(
-        `往年龙头特征：启动价中位数 ${p.startPriceMedian} 元` +
-          (Number.isFinite(p.gainMedian) ? `，窗口涨幅中位数 ${p.gainMedian}%` : '') +
-          (leaders.length
-            ? `；样本：${leaders.map((l) => `${l.year}${esc(l.animal)}年 ${esc(l.name)}（${l.gain > 0 ? '+' : ''}${l.gain}%）`).join('、')}`
-            : ''),
+        `从往年龙头反推的埋伏画像：启动价中位数 ${p.startPriceMedian} 元` +
+          (Number.isFinite(p.preGainMedian) ? `、启动前半年涨幅中位数 ${p.preGainMedian}%（基本横着走）` : '') +
+          '、小市值、盘面安静——情绪票不看业绩，就看这几条。',
       );
     }
 
-    if (matches.length) {
+    const fmt = (x) =>
+      `${esc(x.name)}（匹配 ${x.score}${
+        Number.isFinite(x.change60Pct) ? `，近60日 ${x.change60Pct > 0 ? '+' : ''}${num(x.change60Pct)}%` : ''
+      }）`;
+    const main = ambush.filter((x) => x.type === 'main');
+    const homo = ambush.filter((x) => x.type === 'homophone');
+    const cur = ambush.filter((x) => x.type === 'current');
+
+    if (main.length) {
       lines.push(
-        `按这套特征筛出来、值得盯的：${matches
-          .map((m) => `${esc(m.name)}（匹配 ${m.score}${m.season ? `，该月历史 ${m.season.avgPct > 0 ? '+' : ''}${num(m.season.avgPct)}%` : ''}）`)
-          .join('、')}`,
+        `正主（名称带「${esc(z.nextAnimal)}」）：${main.slice(0, 3).map(fmt).join('、')}` +
+          (z.mainCount > 3 ? `，另有 ${z.mainCount - 3} 只` : ''),
       );
     } else {
-      lines.push('今年的生肖候选还没算出来（可能样本太少）');
+      lines.push(
+        `名称带「${esc(z.nextAnimal)}」的主板股一只都没有——这种年份题材标的太少，` +
+          '市场往往会转去炒谐音，所以下面那批反而更值得留意。',
+      );
+    }
+    if (homo.length) {
+      lines.push(
+        `谐音扩展（${(z.homophoneChars || []).join('/')}）：${homo.slice(0, 4).map(fmt).join('、')}` +
+          '。谐音票确定性比正主低一档，只适合小仓位试。',
+      );
+    }
+    if (cur.length) {
+      lines.push(
+        `今年（${esc(z.thisAnimal)}）的尾部行情：${cur.slice(0, 3).map(fmt).join('、')}` +
+          '。窗口还没走完，但已经炒过的要防接棒。',
+      );
     }
 
+    lines.push('提醒：生肖是纯情绪题材，和业绩没关系、容易一日游，真要埋伏只用小仓位并设好止损。');
     return `<div class="zodiac-note">${lines.join('<br />')}</div>`;
   }
 
   function renderMonthlyBody(list, d) {
-    const zodiacMap = new Map(((d.zodiac && d.zodiac.matches) || []).map((m) => [m.code, m]));
+    const zodiacMap = new Map(((d.zodiac && d.zodiac.ambush) || []).map((m) => [m.code, m]));
     const winSet = new Set(((d.zodiac && d.zodiac.window && d.zodiac.window.windowMonths) || []));
 
     const section = (title, sub, items, monthLabel, monthValue) => {
@@ -909,7 +936,7 @@
       return;
     }
 
-    list.appendChild(loadingNode('正在拉取月线并统计（首次约 20~30 秒，之后 6 小时内秒开）…'));
+    list.appendChild(loadingNode('正在拉取几十只票的月线做统计（首次约 30~60 秒，之后 12 小时内秒开）…'));
     if (monthlyCache.loading) return;
     monthlyCache.loading = true;
     try {

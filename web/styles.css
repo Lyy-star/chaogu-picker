@@ -736,6 +736,9 @@ ul.risks li { margin-bottom: 6px; line-height: 1.65; }
   background: rgba(240, 163, 58, .18); color: var(--warn);
   border-radius: 4px; padding: 0 5px; font-size: 11.5px; cursor: help;
 }
+.zodiac-tag.main { background: rgba(240, 163, 58, .22); color: var(--warn); }
+.zodiac-tag.homo { background: rgba(79, 140, 255, .16); color: var(--accent); }
+.zodiac-tag.cur { background: rgba(139, 147, 165, .18); color: var(--text-dim); }
 .zodiac-note {
   margin-top: 10px; padding: 9px 11px;
   border-left: 2px solid var(--warn); border-radius: 6px;

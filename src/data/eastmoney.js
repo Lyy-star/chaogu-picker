@@ -76,7 +76,8 @@ const QUOTE_FIELDS = [
 ].join(',');
 
 /** 列表型接口（clist / ulist）用的是 f2/f3/f12/f14 这套字段编号 */
-const LIST_FIELDS = 'f2,f3,f4,f5,f6,f8,f9,f10,f12,f13,f14,f15,f16,f17,f18,f20,f21,f23,f62,f184';
+// f24 = 60 个交易日涨跌幅（判断"有没有启动"用，省掉一次 K 线请求）
+const LIST_FIELDS = 'f2,f3,f4,f5,f6,f8,f9,f10,f12,f13,f14,f15,f16,f17,f18,f20,f21,f23,f24,f62,f184';
 
 function normalizeListRow(r) {
   return {
@@ -97,6 +98,7 @@ function normalizeListRow(r) {
     marketCap: num(r.f20),
     floatCap: num(r.f21),
     pb: num(r.f23),
+    change60Pct: num(r.f24),
     mainNetIn: num(r.f62),
     mainNetInPct: num(r.f184),
   };
@@ -465,7 +467,8 @@ let monthPrimaryFails = 0;
 
 async function monthlyKline(code, limit = 120, options = {}) {
   const secid = toSecid(code);
-  return cached(`mkline_${secid}_${limit}`, 6 * 60 * 60 * 1000, async () => {
+  // 月线一天最多变一次，缓存 24 小时，避免反复去上游拉几十只票
+  return cached(`mkline_${secid}_${limit}`, 24 * 60 * 60 * 1000, async () => {
     const viaTencent = () => backup.tencentKline(code, limit, 'month', { timeout: 4000 });
     const viaEm = async () => {
       const url =

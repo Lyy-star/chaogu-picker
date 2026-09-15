@@ -243,7 +243,7 @@ async function apiInsight(code) {
  * 再和当前选股评分加权排序。结果缓存 6 小时。
  */
 async function apiMonthly() {
-  return cached('monthly_rank', 6 * 60 * 60 * 1000, async () => {
+  return cached('monthly_rank', 12 * 60 * 60 * 1000, async () => {
     const now = new Date();
     const year = now.getFullYear();
     const month = now.getMonth() + 1;
@@ -271,11 +271,24 @@ async function apiMonthly() {
     const thisAnimal = seasonalEngine.zodiacOf(year);
     const nextAnimal = seasonalEngine.zodiacOf(year + 1);
 
-    // 今年的生肖候选（今年 + 明年的生肖字），按成交额取前一批
-    const zodiacNow = seasonalEngine
-      .matchZodiac(rows, [thisAnimal, nextAnimal])
-      .sort((a, b) => (b.amount || 0) - (a.amount || 0))
+    // 市场炒作的是"明年的生肖"，所以主线放在 nextAnimal 上：
+    // 正主字全部收进来，另外补一批谐音字（小市值优先，方便埋伏）
+    // 生肖是情绪票，但 ST 还是要排除（退市风险不是情绪问题）
+    const investable = rows.filter((r) => !/ST|退/.test(String(r.name || '')));
+    const mainRows = seasonalEngine.matchZodiac(investable, [nextAnimal]);
+    const homophoneChars = seasonalEngine.zodiacChars(nextAnimal).filter((c) => c !== nextAnimal);
+    const homoRows = seasonalEngine
+      .matchZodiac(investable, homophoneChars)
+      .filter((r) => !mainRows.some((m) => m.code === r.code))
+      .sort((a, b) => (a.floatCap || Infinity) - (b.floatCap || Infinity))
       .slice(0, 8);
+    // 今年生肖的尾部行情（窗口到次年春节前），列几只当参考
+    const currentRows = seasonalEngine
+      .matchZodiac(investable, [thisAnimal])
+      .filter((r) => !mainRows.some((m) => m.code === r.code)
+        && !homoRows.some((m) => m.code === r.code))
+      .sort((a, b) => (b.amount || 0) - (a.amount || 0))
+      .slice(0, 5);
 
     // 往年生肖（近 3 年）：拿来统计"炒在哪几个月"和"龙头长什么样"
     const pastSets = [1, 2, 3].map((i) => {
@@ -285,7 +298,7 @@ async function apiMonthly() {
         year: y,
         animal,
         rows: seasonalEngine
-          .matchZodiac(rows, [animal])
+          .matchZodiac(investable, [animal])
           .sort((a, b) => (b.amount || 0) - (a.amount || 0))
           .slice(0, 5),
       };
@@ -298,32 +311,38 @@ async function apiMonthly() {
 
     const histTasks = pastSets.flatMap((p) =>
       p.rows.map((r) => ({ ...r, year: p.year, animal: p.animal, kind: 'history' })));
-    const nowTasks = zodiacNow.map((r) => ({ ...r, kind: 'now' }));
-    const poolTasks = [...pool.values()].slice(0, 26).map((c) => ({ ...c, kind: 'pool' }));
+    const poolTasks = [...pool.values()].slice(0, 20).map((c) => ({ ...c, kind: 'pool' }));
 
-    const fetched = await mapLimit([...histTasks, ...nowTasks, ...poolTasks], 4, fetchMonthly);
+    const fetched = await mapLimit([...histTasks, ...poolTasks], 4, fetchMonthly);
     const histSamples = fetched.filter((x) => x.kind === 'history');
-    const nowSamples = fetched.filter((x) => x.kind === 'now');
     const usable = fetched.filter((x) => x.bars && x.bars.length);
 
     const hypeWindow = seasonalEngine.hypeWindow(histSamples);
     const leaderProfile = seasonalEngine.leaderProfile(histSamples);
-    const zodiacMatches = nowSamples
-      .filter((x) => x.bars && x.bars.length)
+    // 生肖候选直接用行情快照打分：快照自带 60 日涨跌幅和流通市值，
+    // 足够判断"低价 / 小市值 / 还没启动 / 盘面安静"，不用再为它们拉月线。
+    const ambush = [
+      ...mainRows.slice(0, 8).map((r) => ({ ...r, zType: 'main', animal: nextAnimal })),
+      ...homoRows.map((r) => ({ ...r, zType: 'homophone', animal: nextAnimal })),
+      ...currentRows.map((r) => ({ ...r, zType: 'current', animal: thisAnimal })),
+    ]
       .map((x) => {
-        const scored = seasonalEngine.matchLeaderProfile(x, leaderProfile);
-        const season = seasonalEngine.seasonOf(x.bars, month);
+        const scored = seasonalEngine.ambushScore(x, leaderProfile, { type: x.zType });
         return {
           code: x.code,
           name: x.name,
           zodiacChar: x.zodiacChar,
+          type: x.zType,
+          animal: x.animal,
           price: x.price,
           changePct: x.changePct,
           amount: x.amount,
+          floatCap: x.floatCap,
           turnoverRate: x.turnoverRate,
+          change60Pct: x.change60Pct,
           score: scored.score,
           reasons: scored.reasons,
-          season: season && season.total >= 2 ? season : null,
+          risks: scored.risks,
         };
       })
       .sort((a, b) => b.score - a.score);
@@ -347,17 +366,19 @@ async function apiMonthly() {
         yearNext: year + 1,
         thisAnimal,
         nextAnimal,
+        mainCount: mainRows.length,
+        homophoneChars,
         pastYears: pastSets.map((p) => ({ year: p.year, animal: p.animal, sample: p.rows.length })),
         window: hypeWindow,
         profile: leaderProfile,
-        matches: zodiacMatches,
+        ambush,
       },
       notes: [
         `做法：候选股取近 10 年月线，统计它们在 ${monthName} 的历史平均涨跌和上涨年份占比，再和当前选股评分加权排序（季节性 65% + 当前评分 35%）。`,
         '样本不足 3 年的票不会列出来——样本太短的“规律”基本都是巧合。',
-        `生肖只是月份里的备注：市场炒生肖一般集中在四季度到次年春节前，
-         我按近三年生肖股的月度表现统计出窗口月份，再用往年生肖龙头的特征（主要是启动价和活跃度）给今年的候选打分。
-         这类纯属题材炒作，涨跌靠情绪和资金，和业绩没关系，只适合小仓位试。`,
+        `生肖只是月份里的备注，而且注意：市场炒的是"明年的生肖"（现在这个时间是 ${year + 1} 年 ${nextAnimal} 年）。
+         我先用近三年生肖股的月度表现统计出炒作窗口，再从往年龙头反推"适合埋伏的票"长什么样——
+         纯情绪票，不看业绩，只看低价、小市值、还没启动、盘面安静这几条。`,
         '全部是历史统计，不构成投资建议；真要买，仍按交易计划的买入区间和止损执行。',
       ],
     };
