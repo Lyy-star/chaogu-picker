@@ -778,7 +778,7 @@
 
   /* ---------------------- 月度推荐 + 生肖 ---------------------- */
 
-  const monthlyCache = { data: null, loading: false };
+  const monthlyCache = { data: null, loading: false, month: null };
 
   function monthRow(item, monthName, zodiacMap) {
     const row = el('div', 'month-row');
@@ -878,34 +878,37 @@
   function renderMonthlyBody(list, d) {
     const zodiacMap = new Map(((d.zodiac && d.zodiac.ambush) || []).map((m) => [m.code, m]));
     const winSet = new Set(((d.zodiac && d.zodiac.window && d.zodiac.window.windowMonths) || []));
+    const picked = monthlyCache.month || d.month;
+    const label = `${picked} 月`;
+    const items = (d.months && d.months[picked]) || [];
 
-    const section = (title, sub, items, monthLabel, monthValue) => {
-      const box = el('div', 'card month-card');
-      box.innerHTML = `<h3>${title} <span class="badge">${sub}</span></h3>`;
-      if (!items || !items.length) {
-        box.appendChild(emptyNode('样本不足，暂时没有符合条件的票'));
-      } else {
-        items.forEach((it) => box.appendChild(monthRow(it, monthLabel, zodiacMap)));
-      }
-      box.insertAdjacentHTML('beforeend', zodiacNoteHtml(d, monthLabel, winSet.has(monthValue)));
-      list.appendChild(box);
-      return box;
-    };
+    // 月份选择：默认当前月，切了立刻换一份推荐
+    const head = el('div', 'month-head');
+    const options = Object.keys(d.months || {})
+      .map((m) => Number(m))
+      .sort((a, b) => a - b)
+      .map((m) => `<option value="${m}"${m === picked ? ' selected' : ''}>${m} 月</option>`)
+      .join('');
+    head.innerHTML =
+      `<span class="badge">看哪个月 <select id="monthSelect">${options}</select></span>
+       <span class="badge">${esc(d.monthName)}是当前月</span>
+       ${winSet.has(picked) ? '<span class="badge hot">这个月是生肖炒作窗口</span>' : ''}
+       <span class="stock-code">候选 ${d.candidates} 只 · 有月线 ${d.barsAvailable} 只</span>`;
+    list.appendChild(head);
+    head.querySelector('#monthSelect').addEventListener('change', (e) => {
+      monthlyCache.month = Number(e.target.value);
+      render();
+    });
 
-    section(
-      `本月（${d.monthName}）历史顺风股`,
-      `候选 ${d.candidates} 只 · 有月线 ${d.barsAvailable} 只`,
-      d.thisMonth,
-      d.monthName,
-      d.month,
-    );
-    section(
-      `下月（${d.nextMonthName}）提前布局`,
-      '历史上这个月更容易涨的票',
-      d.next,
-      d.nextMonthName,
-      d.nextMonth,
-    );
+    const box = el('div', 'card month-card');
+    box.innerHTML = `<h3>${label} 历史顺风股 <span class="badge">季节性 65% + 当前评分 35%</span></h3>`;
+    if (!items.length) {
+      box.appendChild(emptyNode('这个月的历史样本不足，暂时没有符合条件的票'));
+    } else {
+      items.forEach((it) => box.appendChild(monthRow(it, label, zodiacMap)));
+    }
+    box.insertAdjacentHTML('beforeend', zodiacNoteHtml(d, label, winSet.has(picked)));
+    list.appendChild(box);
 
     const noteBox = el('div', 'card month-card');
     noteBox.innerHTML = `<h3>这份推荐是怎么来的</h3><ul class="plain">${(d.notes || [])
@@ -918,9 +921,10 @@
     $('#catHead').hidden = false;
     $('#catTitle').textContent = '月度推荐';
     const cached = monthlyCache.data;
+    const pickedMonth = monthlyCache.month || (cached && cached.month) || new Date().getMonth() + 1;
     $('#catHeadline').textContent = cached
-      ? `${cached.monthName} 历史顺风股 · 下月（${cached.nextMonthName}）提前布局 · 生肖题材`
-      : '正在统计每只票近 10 年的月度规律…';
+      ? `${pickedMonth} 月的历史顺风股（上方可切换月份）· 生肖埋伏清单也就写在这一页`
+      : '正在统计每只票近 10 年的月度规律（首次 30~60 秒）…';
     $('#catMethod').innerHTML =
       '排序口径：<b>季节性 65% + 当前选股评分 35%</b>。季节性 = 这只票在过去若干年的这个自然月里，' +
       '平均涨多少、有几年是上涨的；样本少于 3 年的不参与排序。生肖那段是按名称筛选的题材统计，' +

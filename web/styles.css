@@ -714,6 +714,12 @@ ul.risks li { margin-bottom: 6px; line-height: 1.65; }
 /* ---------------------- 月度推荐 ---------------------- */
 
 .month-card { margin-bottom: 14px; }
+.month-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+.month-head select {
+  background: #232a36; border: 1px solid #2b3341; color: var(--text);
+  border-radius: 5px; padding: 3px 6px; font-size: 12.5px; font-family: inherit;
+}
+.month-head select:focus { outline: none; border-color: var(--accent); }
 .month-row {
   display: grid;
   grid-template-columns: minmax(150px, 1.4fr) 110px minmax(190px, 1.6fr) minmax(150px, 1.2fr) 66px;

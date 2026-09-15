@@ -350,6 +350,13 @@ async function apiMonthly() {
     const monthName = seasonalEngine.MONTH_CN[month - 1];
     const nextName = seasonalEngine.MONTH_CN[nextMonth - 1];
 
+    // 12 个月的排名一次算完（候选只有二三十只，计算本身很便宜），
+    // 这样前端切换月份是秒切，不用再请求一次
+    const months = {};
+    for (let m = 1; m <= 12; m += 1) {
+      months[m] = seasonalEngine.rankForMonth(usable, m, { limit: 12 });
+    }
+
     return {
       at: Date.now(),
       year,
@@ -359,8 +366,9 @@ async function apiMonthly() {
       nextMonthName: nextName,
       candidates: poolTasks.length,
       barsAvailable: usable.length,
-      thisMonth: seasonalEngine.rankForMonth(usable, month, { limit: 12 }),
-      next: seasonalEngine.rankForMonth(usable, nextMonth, { limit: 12 }),
+      months,
+      thisMonth: months[month],
+      next: months[nextMonth],
       zodiac: {
         year,
         yearNext: year + 1,
