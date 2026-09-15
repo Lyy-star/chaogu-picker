@@ -219,4 +219,4 @@ function analyze(bars, { name, price } = {}) {
   };
 }
 
-module.exports = { analyze, monthlyReturns };
+module.exports = { analyze, monthlyReturns, monthSummary, consecutiveUpYears, MONTH_CN };

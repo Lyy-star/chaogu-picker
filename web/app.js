@@ -305,6 +305,7 @@
     if (state.tab === 'calendar') return renderCalendar();
     if (state.tab === 'watch') return renderWatch();
     if (state.tab === 'holding') return renderHoldings();
+    if (state.tab === 'monthly') return renderMonthly();
 
     head.hidden = false;
     const cat = state.tab === 'top' ? null : state.picks && state.picks[state.tab];
@@ -773,6 +774,130 @@
     };
     setTimeout(() => { tick().catch(() => {}); }, 25 * 1000);
     setInterval(() => { tick().catch(() => {}); }, HOLDING_POLL_MS);
+  }
+
+  /* ---------------------- 月度推荐 + 生肖 ---------------------- */
+
+  const monthlyCache = { data: null, loading: false };
+
+  function monthRow(item, monthName) {
+    const row = el('div', 'month-row');
+    const s = item.season || {};
+    const bits = [];
+    if (Number.isFinite(item.seasonScore)) bits.push(`季节 ${num(item.seasonScore, 1)}`);
+    if (Number.isFinite(item.techScore)) bits.push(`当前 ${Math.round(item.techScore)}`);
+    if (Number.isFinite(item.total)) bits.push(`综合 ${num(item.total, 1)}`);
+
+    row.innerHTML =
+      `<div class="mr-name clickable" title="点名称看完整分析">
+         <span class="stock-name">${esc(item.name || item.code)}</span>
+         <span class="stock-code">${esc(item.code)}</span>
+       </div>
+       <div class="mr-price ${pctClass(item.changePct)}">${num(item.price)}
+         <span class="sub">${pctText(item.changePct)}</span></div>
+       <div class="mr-season">
+         <b class="${s.avgPct >= 0 ? 'up' : 'down'}">${s.avgPct > 0 ? '+' : ''}${num(s.avgPct)}%</b>
+         <span>${monthName}平均 · ${s.total} 年 ${s.up} 涨（${num(s.winRate, 0)}%）</span>
+       </div>
+       <div class="mr-score">${bits.join(' · ')}</div>
+       <button class="btn ghost mr-open">看图</button>`;
+
+    row.querySelector('.mr-name').addEventListener('click', () => openDetail(item.code, null));
+    row.querySelector('.mr-open').addEventListener('click', () => openDetail(item.code, null));
+    return row;
+  }
+
+  function renderMonthlyBody(list, d) {
+    const section = (title, sub, items) => {
+      const box = el('div', 'card month-card');
+      box.innerHTML = `<h3>${title} <span class="badge">${sub}</span></h3>`;
+      if (!items || !items.length) {
+        box.appendChild(emptyNode('样本不足，暂时没有符合条件的票'));
+      } else {
+        items.forEach((it) => box.appendChild(monthRow(it, d.monthName)));
+      }
+      list.appendChild(box);
+      return box;
+    };
+
+    section(
+      `本月（${d.monthName}）历史顺风股`,
+      `候选 ${d.candidates} 只 · 有月线 ${d.barsAvailable} 只`,
+      d.thisMonth,
+    );
+    section(`下月（${d.nextMonthName}）提前布局`, '历史上这个月更容易涨的票', d.next);
+
+    const z = d.zodiac || {};
+    const zBox = el('div', 'card month-card');
+    zBox.innerHTML =
+      `<h3>生肖题材 <span class="badge">${esc(z.thisAnimal)}年（${z.year}） / ${esc(z.nextAnimal)}年（${z.yearNext}）</span></h3>
+       <div class="ev-impact">名称里带「${esc(z.thisAnimal)}」或「${esc(z.nextAnimal)}」的主板股，按成交额排序。
+         这几年市场确实有年底炒来年生肖的习惯，但这类涨跌靠情绪和资金，和业绩没关系，波动也大得多。</div>`;
+    if (!(z.items || []).length) {
+      zBox.appendChild(emptyNode('没有筛到名称带生肖的主板股'));
+    } else {
+      const grid = el('div', 'zodiac-grid');
+      z.items.forEach((it) => {
+        const chip = el('div', 'zodiac-chip');
+        chip.innerHTML =
+          `<b>${esc(it.zodiacChar)}</b>
+           <span class="stock-name">${esc(it.name)}</span>
+           <span class="stock-code">${esc(it.code)}</span>
+           <span class="${pctClass(it.changePct)}">${num(it.price)} ${pctText(it.changePct)}</span>
+           <span class="stock-code">${
+             it.season ? `${d.monthName}历史 ${it.season.avgPct > 0 ? '+' : ''}${num(it.season.avgPct)}%` : '上市太短，没样本'
+           }</span>`;
+        chip.addEventListener('click', () => openDetail(it.code, null));
+        grid.appendChild(chip);
+      });
+      zBox.appendChild(grid);
+    }
+    list.appendChild(zBox);
+
+    const noteBox = el('div', 'card month-card');
+    noteBox.innerHTML = `<h3>这份推荐是怎么来的</h3><ul class="plain">${(d.notes || [])
+      .map((n) => `<li>${esc(n)}</li>`)
+      .join('')}</ul>`;
+    list.appendChild(noteBox);
+  }
+
+  async function renderMonthly() {
+    $('#catHead').hidden = false;
+    $('#catTitle').textContent = '月度推荐';
+    const cached = monthlyCache.data;
+    $('#catHeadline').textContent = cached
+      ? `${cached.monthName} 历史顺风股 · 下月（${cached.nextMonthName}）提前布局 · 生肖题材`
+      : '正在统计每只票近 10 年的月度规律…';
+    $('#catMethod').innerHTML =
+      '排序口径：<b>季节性 65% + 当前选股评分 35%</b>。季节性 = 这只票在过去若干年的这个自然月里，' +
+      '平均涨多少、有几年是上涨的；样本少于 3 年的不参与排序。生肖那段是按名称筛选的题材统计，' +
+      '不是业绩逻辑。' +
+      '<br><br><b>免责声明：</b>历史统计不预测未来，别把季节性当成必然；真要买，仍然按交易计划的买入区间和止损执行。';
+
+    const list = $('#list');
+    list.innerHTML = '';
+    renderSearchResults(null);
+
+    if (cached) {
+      renderMonthlyBody(list, cached);
+      return;
+    }
+
+    list.appendChild(loadingNode('正在拉取月线并统计（首次约 20~30 秒，之后 6 小时内秒开）…'));
+    if (monthlyCache.loading) return;
+    monthlyCache.loading = true;
+    try {
+      monthlyCache.data = await api('/api/monthly');
+    } catch (err) {
+      monthlyCache.loading = false;
+      if (state.tab !== 'monthly') return;
+      list.innerHTML = '';
+      list.appendChild(emptyNode(`月度推荐加载失败：${err.message}`));
+      return;
+    }
+    monthlyCache.loading = false;
+    if (state.tab !== 'monthly') return;
+    render(); // 重新走一遍：标题、副标题和正文都用刚拿到的数据刷新
   }
 
   /* ---------------------- 搜股票 ---------------------- */

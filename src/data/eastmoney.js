@@ -445,6 +445,9 @@ async function kline(code, { klt = 101, limit = 250, fqt = 1 } = {}, options = {
       try {
         return await backup.tencentKline(code, limit, period);
       } catch (_) {
+        // 新浪的接口只有日线：拿日线冒充周线/月线会算出完全错误的统计量，
+        // 所以非日线周期宁可失败，也不要返回错的数据。
+        if (period !== 'day') throw new Error(`东方财富和腾讯的${period === 'month' ? '月' : '周'}线都取不到`);
         return backup.sinaKline(code, limit);
       }
     }
