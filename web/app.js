@@ -309,6 +309,7 @@
     if (state.tab === 'watch') return renderWatch();
     if (state.tab === 'holding') return renderHoldings();
     if (state.tab === 'monthly') return renderMonthly();
+    if (state.tab === 'shortterm') return renderShortTerm();
 
     head.hidden = false;
     const cat = state.tab === 'top' ? null : state.picks && state.picks[state.tab];
@@ -777,6 +778,141 @@
     };
     setTimeout(() => { tick().catch(() => {}); }, 25 * 1000);
     setInterval(() => { tick().catch(() => {}); }, HOLDING_POLL_MS);
+  }
+
+  /* ---------------------- 短线推荐（龙虎榜 + 席位追踪） ---------------------- */
+
+  const shortTermCache = { data: null, loading: false };
+
+  function shortTermCard(it) {
+    const card = el('div', 'ev-card st-card');
+    const wr = it.winRate || {};
+    const seat = it.seat || {};
+    const cls = it.score >= 78 ? 'hot' : it.score <= 55 ? 'cold' : '';
+    const winText = wr.samples >= 4
+      ? `5日胜率 ${num(wr.winRate, 1)}%（${wr.samples} 次）`
+      : `历史样本不足（${wr.samples || 0} 次）`;
+
+    const badges = [
+      `<span class="badge ${cls}">${esc(it.verdict)} · 短线分 ${it.score}</span>`,
+      `<span class="badge">${winText}</span>`,
+      wr.samples >= 4 ? `<span class="badge">平均 ${wr.avgD5 > 0 ? '+' : ''}${num(wr.avgD5)}%</span>` : '',
+      `<span class="badge">上榜 ${esc(String(it.date).slice(5))}</span>`,
+      `<span class="badge ${it.netBuy >= 0 ? 'hot' : 'cold'}">净买 ${yi(it.netBuy)}</span>`,
+      seat.instCount ? `<span class="badge">机构席位 ${seat.instCount}</span>` : '',
+      seat.activeCount ? `<span class="badge hot">活跃游资 ${seat.activeCount}</span>` : '',
+    ].filter(Boolean).join('');
+
+    card.innerHTML =
+      `<div class="ev-top">
+         <span class="ev-name clickable" title="点名称看完整分析">${esc(it.name)}
+           <span class="stock-code">${esc(it.code)}</span></span>
+         <span class="ev-date ${pctClass(it.changePct)}">${num(it.price)} ${pctText(it.changePct)}</span>
+       </div>
+       <div class="ev-meta">${badges}
+         <button class="btn ghost st-open">看图</button>
+       </div>
+       <div class="ev-impact">上榜原因：${esc(it.explain || '-')}</div>
+       ${(it.reasons || []).length || (it.risks || []).length
+         ? `<div class="analysis-line">
+              ${(it.reasons || []).map((r) => '· ' + esc(r)).join('<br />')}
+              ${(it.risks || []).length ? '<br />' + (it.risks || []).map((r) => '⚠ ' + esc(r)).join('<br />') : ''}
+            </div>`
+         : ''}`;
+
+    card.querySelector('.ev-name').addEventListener('click', () => openDetail(it.code, null));
+    card.querySelector('.st-open').addEventListener('click', () => openDetail(it.code, null));
+    return card;
+  }
+
+  function renderShortTermBody(list, d) {
+    const head = el('div', 'month-head');
+    head.innerHTML =
+      `<span class="badge">数据区间 ${esc(d.from)} 起</span>
+       <span class="badge">龙虎榜记录 ${d.counts.board} 条</span>
+       <span class="badge">候选个股 ${d.counts.candidates} 只</span>
+       <button class="btn ghost" id="stRefresh">重新获取</button>
+       <span class="stock-code">最后更新 ${new Date(d.at).toLocaleTimeString('zh-CN', { hour12: false })}</span>`;
+    list.appendChild(head);
+    head.querySelector('#stRefresh').addEventListener('click', async () => {
+      shortTermCache.data = null;
+      render();
+    });
+
+    if (!(d.items || []).length) {
+      list.appendChild(emptyNode('最近一周没有符合条件的龙虎榜个股'));
+    } else {
+      d.items.forEach((it) => list.appendChild(shortTermCard(it)));
+    }
+
+    const seatBox = el('div', 'card');
+    seatBox.innerHTML = `<h3>席位追踪 <span class="badge">近 5 日买方席位（已剔除机构专用与北向）</span></h3>`;
+    const seats = (d.hotSeats || []).filter((s) => s.times >= 2);
+    if (!seats.length) {
+      seatBox.appendChild(emptyNode('最近 5 天没有重复出现的活跃席位'));
+    } else {
+      const box = el('div', 'seat-list');
+      seats.forEach((s) => {
+        const row = el('div', 'seat-row');
+        row.innerHTML =
+          `<span class="sr-times">${s.times} 次</span>
+           <span class="sr-prob">${num(s.prob3, 1)}%</span>
+           <span class="sr-name">${esc(s.name)}</span>
+           <span class="stock-code">买入 ${yi(s.buy)}</span>
+           <span class="stock-code">${esc((s.stocks || []).slice(0, 3).join('、'))}</span>`;
+        box.appendChild(row);
+      });
+      seatBox.appendChild(box);
+      seatBox.insertAdjacentHTML(
+        'beforeend',
+        '<div class="ev-impact">「次数」是这个席位近 5 天上榜的次数；百分比是东方财富按该席位历史战绩算的近 3 日上涨概率。席位活跃只能说明有资金在反复做，不代表跟着买就赚。</div>',
+      );
+    }
+    list.appendChild(seatBox);
+
+    const noteBox = el('div', 'card');
+    noteBox.innerHTML = `<h3>这份推荐是怎么算的</h3><ul class="plain">${(d.notes || [])
+      .map((n) => `<li>${esc(n)}</li>`)
+      .join('')}</ul>`;
+    list.appendChild(noteBox);
+  }
+
+  async function renderShortTerm() {
+    $('#catHead').hidden = false;
+    $('#catTitle').textContent = '短线推荐';
+    const cached = shortTermCache.data;
+    $('#catHeadline').textContent = cached
+      ? `最近一周 ${cached.counts.candidates} 只上榜个股，按「历史胜率 35% + 席位 25% + 资金 20% + 技术位置 20%」排序`
+      : '正在拉取龙虎榜与席位数据…';
+    $('#catMethod').innerHTML =
+      '以龙虎榜为核心：先看最近一周谁上了榜、买方是哪些席位（机构专用 / 活跃游资 / 普通营业部），' +
+      '再回头统计这只票历史上榜后 5 日的胜率，最后叠上日线技术位置。' +
+      '<br><br><b>免责声明：</b>短线本质是概率游戏，这里的胜率是历史统计、席位是资金痕迹，都不代表下一次也会涨。' +
+      '仓位和止损必须自己控制。';
+
+    const list = $('#list');
+    list.innerHTML = '';
+
+    if (cached) {
+      renderShortTermBody(list, cached);
+      return;
+    }
+
+    list.appendChild(loadingNode('正在抓取最近一周龙虎榜、买卖席位和历史胜率（首次约 15~40 秒）…'));
+    if (shortTermCache.loading) return;
+    shortTermCache.loading = true;
+    try {
+      shortTermCache.data = await api('/api/shortterm');
+    } catch (err) {
+      shortTermCache.loading = false;
+      if (state.tab !== 'shortterm') return;
+      list.innerHTML = '';
+      list.appendChild(emptyNode(`短线推荐加载失败：${err.message}`));
+      return;
+    }
+    shortTermCache.loading = false;
+    if (state.tab !== 'shortterm') return;
+    render();
   }
 
   /* ---------------------- 月度推荐 + 生肖 ---------------------- */

@@ -17,6 +17,7 @@ const verdictEngine = require('./engine/verdict');
 const holdingEngine = require('./engine/holding');
 const insightEngine = require('./engine/insight');
 const seasonalEngine = require('./engine/seasonal');
+const shortTermEngine = require('./engine/shortterm');
 const portfolio = require('./engine/portfolio');
 const mirror = require('./lib/mirror');
 const { cached, invalidate } = require('./lib/cache');
@@ -218,6 +219,103 @@ async function apiHoldingsAdvice(body = {}) {
   });
 
   return { at: Date.now(), cash, items: out };
+}
+
+/**
+ * 短线推荐：以龙虎榜为核心，做席位追踪 + 个股历史胜率。
+ *
+ * 数据来源是东方财富数据中心：
+ *   - 近一周的龙虎榜详情（候选）与买卖席位（追踪游资）
+ *   - 近 4 个月的历史龙虎榜（算每只票上榜后 5 日的胜率）
+ * 第一轮先用龙虎榜数据打分，第二轮只给前 12 只补日线技术位置。
+ */
+async function apiShortTerm() {
+  return cached('shortterm', 30 * 60 * 1000, async () => {
+    const now = new Date();
+    const recentFrom = shortTermEngine.dayBefore(7, now);
+    const historyFrom = shortTermEngine.dayBefore(120, now);
+
+    const [recent, seats, sells, history] = await Promise.all([
+      em.lhbBoard(recentFrom).catch(() => []),
+      em.lhbBuySeats(recentFrom).catch(() => []),
+      em.lhbSellSeats(recentFrom).catch(() => []),
+      em.lhbBoard(historyFrom).catch(() => []),
+    ]);
+
+    const built = shortTermEngine.buildCandidates({
+      boardRows: recent,
+      seatRows: seats,
+      sellRows: sells,
+      // 历史拉不到就退化成"只用近一周"，胜率会标样本不足
+      historyRows: history.length ? history : recent,
+      maxCandidates: 12,
+    });
+
+    const items = await mapLimit(built.list, 4, async (c) => {
+      const k = await em.kline(c.code, { limit: 120 }).catch(() => null);
+      const bars = k && k.bars ? mergeLiveBar(k.bars, { price: c.price }) : null;
+      const tech = bars ? buildContext(bars, c.price) : null;
+      const final = shortTermEngine.scoreFinal(c.base, { tech });
+      return {
+        code: c.code,
+        name: c.name,
+        date: c.date,
+        price: c.price,
+        changePct: c.changePct,
+        turnoverRate: c.turnoverRate,
+        floatCap: c.floatCap,
+        dealRatio: c.dealRatio,
+        netBuy: c.netBuy,
+        explain: c.explain,
+        explanation: c.explanation,
+        winRate: c.winRate,
+        seat: {
+          count: c.seat.count,
+          instCount: c.seat.instCount,
+          activeCount: c.seat.activeCount,
+          activeNames: c.seat.activeNames,
+          topProb: c.seat.topProb,
+          topNames: c.seat.topNames,
+        },
+        tech: tech
+          ? {
+              ma5: tech.ma5,
+              ma10: tech.ma10,
+              ma20: tech.ma20,
+              position: tech.position,
+              atrPct: tech.atrPct,
+              chg5Pct: tech.chg5Pct,
+              bullStack: tech.bullStack,
+            }
+          : null,
+        score: final.score,
+        verdict: final.verdict,
+        reasons: final.reasons,
+        risks: final.risks,
+      };
+    });
+    // 第二轮的最终分才是排序依据
+    items.sort((a, b) => b.score - a.score);
+
+    return {
+      at: Date.now(),
+      from: recentFrom,
+      counts: {
+        board: recent.length,
+        seats: seats.length,
+        history: history.length,
+        candidates: built.total,
+      },
+      items,
+      hotSeats: shortTermEngine.hotSeats(seats, { days: 5, limit: 10, base: now }),
+      notes: [
+        `候选来自最近一周登过龙虎榜的主板个股（剔除 ST），共 ${built.total} 只，按龙虎榜数据先排一轮，再给前 12 只补日线技术位置。`,
+        '胜率 = 这只票过去每次上榜后 5 个交易日的涨跌统计（数据来自东方财富的 D5 收益字段），样本不足 4 次的会标注"样本有限"。',
+        '席位追踪 = 买入席位里近 3 个月上榜次数≥30 的算活跃游资；「近 3 日上涨概率」是东方财富按该席位历史战绩给出的。',
+        '短线是概率游戏：这里给的是历史统计和资金痕迹，不是明天会涨的保证，务必自己控制仓位和止损。',
+      ],
+    };
+  }, { allowStale: true });
 }
 
 /** 历史规律（详情页的"我的看法"）：用长周期日线做季节性统计 */
@@ -494,6 +592,9 @@ async function handle(req, res) {
       if (p === '/api/monthly') {
         return sendJSON(res, { ok: true, data: await apiMonthly() });
       }
+      if (p === '/api/shortterm') {
+        return sendJSON(res, { ok: true, data: await apiShortTerm() });
+      }
       if (p === '/api/picks') {
         const force = url.searchParams.get('force') === '1';
         const data = await getPicks(force);
@@ -578,6 +679,10 @@ function warmup() {
   setTimeout(() => {
     apiMonthly().catch(() => {});
   }, 90 * 1000);
+  // 短线推荐要拉龙虎榜 + 席位，也放到后台预热
+  setTimeout(() => {
+    apiShortTerm().catch(() => {});
+  }, 150 * 1000);
   // 模拟盘每天要续写一条记录：应用开着的时候每 10 分钟检查一次，
   // 遇到新的交易日或盘中价格变化就更新，不会重复成交（成交价一旦落定就锁定）。
   setInterval(() => {

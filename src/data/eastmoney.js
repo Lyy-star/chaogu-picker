@@ -1245,6 +1245,66 @@ async function stockFundamentalSnapshot(code, options = {}) {
 /* 搜索：代码 / 名称 / 拼音首字母                                        */
 /* ------------------------------------------------------------------ */
 
+/* ------------------------------------------------------------------ */
+/* 龙虎榜：每日详情 + 买入席位                                          */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 龙虎榜每日详情。
+ * 每条记录自带：龙虎榜买卖金额与占比、上榜原因、以及**上榜后 D1/D2/D5/D10 涨幅**
+ * （历史记录里才有值，最近几天的还是 null），所以个股的历史胜率可以直接算。
+ */
+async function lhbBoard(fromDate, options = {}) {
+  return cached(
+    `lhb_board_${fromDate}`,
+    60 * 60 * 1000,
+    () =>
+      dcQueryAll('RPT_DAILYBILLBOARD_DETAILSNEW', {
+        filter: `(TRADE_DATE>='${fromDate}')`,
+        sortColumns: 'TRADE_DATE',
+        sortTypes: '-1',
+        maxPages: 30,
+      }),
+    { allowStale: true, ...options },
+  );
+}
+
+/**
+ * 龙虎榜买入席位。
+ * 每条记录自带该席位「近 3 日上涨概率」和「近 3 个月买方上榜次数」，
+ * 后者用来判断这是不是一线游资席位。
+ */
+async function lhbBuySeats(fromDate, options = {}) {
+  return cached(
+    `lhb_seats_${fromDate}`,
+    60 * 60 * 1000,
+    () =>
+      dcQueryAll('RPT_BILLBOARD_DAILYDETAILSBUY', {
+        filter: `(TRADE_DATE>='${fromDate}')`,
+        sortColumns: 'TRADE_DATE',
+        sortTypes: '-1',
+        maxPages: 20,
+      }),
+    { allowStale: true, ...options },
+  );
+}
+
+/** 龙虎榜卖出席位（判断是不是被游资砸盘） */
+async function lhbSellSeats(fromDate, options = {}) {
+  return cached(
+    `lhb_sellseats_${fromDate}`,
+    60 * 60 * 1000,
+    () =>
+      dcQueryAll('RPT_BILLBOARD_DAILYDETAILSSELL', {
+        filter: `(TRADE_DATE>='${fromDate}')`,
+        sortColumns: 'TRADE_DATE',
+        sortTypes: '-1',
+        maxPages: 20,
+      }),
+    { allowStale: true, ...options },
+  );
+}
+
 const SUGGEST_API = 'https://searchapi.eastmoney.com/api/suggest/get';
 // 这是东方财富搜索框用的公开 token，不是账号密钥
 const SUGGEST_TOKEN = 'D43BF722C8E33BDC906FB84D85E326E8';
@@ -1279,6 +1339,9 @@ module.exports = {
   quote,
   quotesBatch,
   searchStocks,
+  lhbBoard,
+  lhbBuySeats,
+  lhbSellSeats,
   marketOverview,
   marketClock,
   marketSnapshot,

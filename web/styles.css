@@ -757,6 +757,21 @@ ul.risks li { margin-bottom: 6px; line-height: 1.65; }
 }
 .zodiac-note b { color: var(--warn); }
 
+/* ---------------------- 短线推荐：席位追踪 ---------------------- */
+
+.seat-list { margin-top: 8px; }
+.seat-row {
+  display: grid;
+  grid-template-columns: 56px 64px minmax(240px, 1.6fr) 100px minmax(160px, 1fr);
+  gap: 10px; align-items: center;
+  padding: 7px 0; border-top: 1px dashed var(--line);
+  font-size: 12.5px;
+}
+.seat-row:first-child { border-top: none; }
+.sr-times { color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.sr-prob { color: var(--warn); font-variant-numeric: tabular-nums; font-weight: 600; }
+.sr-name { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 @media (max-width: 1180px) {
   .month-row { grid-template-columns: minmax(120px, 1.2fr) 90px minmax(150px, 1.4fr) 66px; }
   .mr-score { display: none; }
