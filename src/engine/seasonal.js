@@ -62,6 +62,89 @@ function seasonOf(bars, month) {
 }
 
 /**
+ * 脉冲型的判定门槛。
+ *
+ * 注意别把普通波动当脉冲：任何票的"月内最高价"都比"月末收盘"高，
+ * 光看"回吐了多少"会几乎全市场命中。真正的脉冲是三条同时成立：
+ *   1. 月内有得抢（历史平均最高涨幅够大）；
+ *   2. 月末基本白干（历史平均月末涨幅很小，甚至为负）；
+ *   3. 大部分涨幅确实被还回去了。
+ */
+const PULSE_RULE = { minPeakPct: 6, maxEndPct: 2, minGiveBack: 0.6 };
+
+/** 这个月的上涨，是"冲几天就还回去"还是"整月趋势" */
+function isPulse(s) {
+  return !!s
+    && Number.isFinite(s.avgPeak)
+    && s.avgPeak >= PULSE_RULE.minPeakPct
+    && Number.isFinite(s.avgPct)
+    && s.avgPct <= PULSE_RULE.maxEndPct
+    && s.giveBack >= PULSE_RULE.minGiveBack;
+}
+
+/**
+ * 单只票某个月的历史统计，**含"月内脉冲"信息**。
+ *
+ * 月线不只有收盘价，还有最高价：把"当月最高价 vs 上月收盘价"当作月内最大涨幅，
+ * 和"月末收盘涨幅"一比，就能区分这个月是整月趋势，还是冲几天就还回去。
+ * 春节档影视这类题材就是典型脉冲——只看月末收盘平平无奇，月内其实冲得很猛，
+ * 所以"当月不完整月线整根剔除"的规则在这里同样适用。
+ */
+function monthStatsWithPeak(bars, month, { now = new Date() } = {}) {
+  const byMonth = new Map();
+  for (const b of bars || []) {
+    const d = String((b && b.date) || '');
+    if (d.length < 7 || !Number.isFinite(b.close)) continue;
+    byMonth.set(d.slice(0, 7), {
+      close: b.close,
+      high: Number.isFinite(b.high) ? b.high : b.close,
+      year: Number(d.slice(0, 4)),
+      month: Number(d.slice(5, 7)),
+    });
+  }
+
+  const keys = [...byMonth.keys()].sort();
+  const curKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  const picks = [];
+  for (let i = 1; i < keys.length; i += 1) {
+    if (keys[i] === curKey) continue; // 当月这根还没走完，整根剔除
+    const prev = byMonth.get(keys[i - 1]);
+    const cur = byMonth.get(keys[i]);
+    if (!prev || !cur || !prev.close || cur.month !== month) continue;
+    picks.push({
+      year: cur.year,
+      endGain: ((cur.close - prev.close) / prev.close) * 100,
+      peakGain: ((cur.high - prev.close) / prev.close) * 100,
+    });
+  }
+  if (!picks.length) return null;
+
+  const total = picks.length;
+  const avgPct = round(mean(picks.map((x) => x.endGain)), 2);
+  const avgPeak = round(mean(picks.map((x) => x.peakGain)), 2);
+  const up = picks.filter((x) => x.endGain > 0).length;
+  const peakUp = picks.filter((x) => x.peakGain > 0);
+  // 回吐比例 = 从月内最高点回落了多少（相对月内最高涨幅）。
+  // 按整体均值算，而不是先算每年的比例再平均——后者在月末大跌时会算出 300% 这种没意义的数。
+  const giveBack = avgPeak > 0
+    ? round(Math.max(0, Math.min(1, (avgPeak - avgPct) / avgPeak)), 2)
+    : 0;
+
+  const stat = {
+    total,
+    avgPct,
+    avgPeak,
+    giveBack,
+    up,
+    winRate: round((up / total) * 100, 1),
+    peakUp: peakUp.length,
+    peakWinRate: round((peakUp.length / total) * 100, 1),
+  };
+  stat.pulse = isPulse(stat);
+  return stat;
+}
+
+/**
  * 候选股 -> 指定月份的季节性排名
  * @param {Array} candidates [{code,name,price,changePct,techScore,bars}]
  * @param {number} month 1-12
@@ -102,11 +185,15 @@ function rankForMonth(candidates, month, {
         avgPct: season.avgPct,
         winRate: season.winRate,
         up: season.up,
+        avgPeak: season.avgPeak,
+        giveBack: season.giveBack,
+        pulse: !!season.pulse,
       },
       seasonScore: sScore,
       total,
       themes,
       themeBonus: themes.length ? themeBonus : 0,
+      pulse: !!season.pulse,
     });
   }
 
@@ -442,6 +529,9 @@ module.exports = {
   zodiacChars,
   seasonScore,
   seasonOf,
+  monthStatsWithPeak,
+  isPulse,
+  PULSE_RULE,
   rankForMonth,
   snapshotScore,
   matchZodiac,

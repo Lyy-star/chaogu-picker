@@ -1116,6 +1116,11 @@
          ${(item.themes || [])
            .map((t) => `<span class="tag theme-tag" title="这个月是「${escapeAttr(t)}」的历史旺季">${esc(t)}</span>`)
            .join('')}
+         ${item.pulse
+           ? `<span class="tag pulse-tag" title="这只票这个月的历史涨幅是「冲几天又还回去」的脉冲型：月内最高 ${num(
+               (item.season || {}).avgPeak,
+             )}%、月末只剩 ${num((item.season || {}).avgPct)}%，别当整月顺风股拿着">月内脉冲</span>`
+           : ''}
        </div>
        <div class="mr-price ${pctClass(item.changePct)}">${num(item.price)}
          <span class="sub">${pctText(item.changePct)}</span></div>
@@ -1188,6 +1193,43 @@
 
     lines.push('提醒：生肖是纯情绪题材，和业绩没关系、容易一日游，真要埋伏只用小仓位并设好止损。');
     return `<div class="zodiac-note">${lines.join('<br />')}</div>`;
+  }
+
+  /** 旺季题材的一行：趋势型和脉冲型用同一套结构，脉冲型多一段"冲高又回吐"的说明 */
+  function themeRowNode(t) {
+    const s = t.stats || {};
+    const row = el('div', t.pulse ? 'theme-row pulse' : 'theme-row');
+    const peakText = Number.isFinite(s.avgPeak)
+      ? `月内最高 ${s.avgPeak > 0 ? '+' : ''}${num(s.avgPeak)}% → 月末 ${s.avgPct > 0 ? '+' : ''}${num(s.avgPct)}%`
+      : `历史平均 ${s.avgPct > 0 ? '+' : ''}${num(s.avgPct)}%`;
+    const backText = t.pulse && Number.isFinite(s.giveBack)
+      ? `<span class="badge cold">平均回吐 ${Math.round(s.giveBack * 100)}%</span>`
+      : '';
+    row.innerHTML =
+      `<div class="theme-head">
+         <span class="stock-name">${esc(t.name)}</span>
+         ${t.pulse ? '<span class="badge cold">脉冲型</span>' : `<span class="badge ${s.avgPct >= 0 ? 'hot' : 'cold'}">${peakText}</span>`}
+         ${backText}
+         <span class="badge">${esc(String(s.up))}/${esc(String(s.members))} 只成分股月末平均上涨</span>
+         <span class="stock-code">样本至少 ${esc(String(s.total))} 年 · 主力成分股 ${esc(String(t.memberCount))} 只</span>
+       </div>
+       <div class="theme-hint">${esc(t.hint || '')}${
+         t.pulse
+           ? `　—— 历史上这个月是「${peakText}」，涨的那几天集中在月内，到月底大部分又还回去。`
+             + '想参与只能在窗口初抢一把就走，别当整月顺风股拿着。'
+           : ''
+       }</div>
+       <div class="theme-stocks">${(t.stocks || [])
+         .map(
+           (x) =>
+             `<span class="theme-stock" data-code="${esc(x.code)}">${esc(x.name)}
+                <b class="${pctClass(x.changePct)}">${pctText(x.changePct)}</b></span>`,
+         )
+         .join('')}</div>`;
+    row.querySelectorAll('.theme-stock').forEach((n) => {
+      n.addEventListener('click', () => openDetail(n.dataset.code, null));
+    });
+    return row;
   }
 
   function renderMonthlyBody(list, d) {
@@ -1272,30 +1314,10 @@
     if (!themes.length) {
       themeBox.appendChild(emptyNode('这个月没有出现历史上明显旺季的题材'));
     } else {
+      const trend = themes.filter((t) => !t.pulse);
+      const pulse = themes.filter((t) => t.pulse);
       const wrap = el('div', 'theme-list');
-      themes.forEach((t) => {
-        const s = t.stats || {};
-        const row = el('div', 'theme-row');
-        row.innerHTML =
-          `<div class="theme-head">
-             <span class="stock-name">${esc(t.name)}</span>
-             <span class="badge ${s.avgPct >= 0 ? 'hot' : 'cold'}">历史平均 ${s.avgPct > 0 ? '+' : ''}${num(s.avgPct)}%</span>
-             <span class="badge">${esc(String(s.up))}/${esc(String(s.members))} 只成分股平均上涨</span>
-             <span class="stock-code">样本至少 ${esc(String(s.total))} 年 · 主力成分股 ${esc(String(t.memberCount))} 只</span>
-           </div>
-           <div class="theme-hint">${esc(t.hint || '')}</div>
-           <div class="theme-stocks">${(t.stocks || [])
-             .map(
-               (x) =>
-                 `<span class="theme-stock" data-code="${esc(x.code)}">${esc(x.name)}
-                    <b class="${pctClass(x.changePct)}">${pctText(x.changePct)}</b></span>`,
-             )
-             .join('')}</div>`;
-        row.querySelectorAll('.theme-stock').forEach((n) => {
-          n.addEventListener('click', () => openDetail(n.dataset.code, null));
-        });
-        wrap.appendChild(row);
-      });
+      [...trend, ...pulse].forEach((t) => wrap.appendChild(themeRowNode(t)));
       themeBox.appendChild(wrap);
       themeBox.insertAdjacentHTML(
         'beforeend',
@@ -1303,7 +1325,9 @@
           String((d.themeRule || {}).minAvgPct),
         )}%、上涨占比 ≥ ${esc(String((d.themeRule || {}).minWinRate))}% 才算数。踩在旺季题材上的票，综合分额外加 ${esc(
           String(d.themeBonus),
-        )} 分并在名称后面标出来。<br />题材只是"这个时间点历史上容易被炒"，不是保证；冰雪经济这种情绪题材，通常来得快去得也快。</div>`,
+        )} 分并在名称后面标出来。
+        <br /><b>脉冲型</b>（${esc(String(pulse.length))} 个）是另一回事：历史上涨集中在月内某几天，到月底大部分又还回去了，
+        只看月末收盘根本看不出来。这种不给加分，只在下面标出来——它的玩法是"窗口初抢一把就走"，不是拿着等一个月。</div>`,
       );
     }
     list.appendChild(themeBox);
@@ -1331,9 +1355,15 @@
       '「当前分」用行情快照统一重算' +
       '（相对强度 + 主力资金 + 量能），保证上百只票是用同一把尺子量出来的。' +
       '<br><br><b>旺季题材：</b>除了个股的季节性，还叠了一层题材季节性——冰雪经济（大连圣亚、长白山这类）、' +
-      '天然气、白酒、啤酒、影视院线、旅游酒店、农业种植、免税、军工、户外露营。' +
+      '煤炭、天然气、电力、白酒、啤酒、白色家电、饮料乳品、旅游酒店、影视院线、航空运输、' +
+      '农业种植、粮食种植、免税、军工、户外露营。' +
       '题材名单是人工挑的，但"哪几个月是旺季"是拿成分股的月线算出来的：成分股在这个月的历史平均涨幅和上涨占比够高才算旺季，' +
       '踩上旺季题材的票会额外加分并打标签。' +
+      '<br><br><b>脉冲型（重要）：</b>有些季节性题材是"涨几天就跌回去"，只看月末收盘根本看不出来。' +
+      '月线里同时有最高价和收盘价，所以能算出来：当月最高价对上月收盘价 = 月内最大涨幅，再和月末收盘涨幅比一比，' +
+      '月内能冲 3% 以上、且过半涨幅到月底又还回去的，就标成「脉冲型」。' +
+      '春节档影视就是典型——月末平平、月内冲得很猛。脉冲型题材不给加分，只在榜单里标注出来：' +
+      '它的玩法是窗口初抢一把就走，不是拿着等一个月。个股行里如果这只票也有同样的脉冲特征，会打上「月内脉冲」标签。' +
       '生肖那段是按名称筛选的题材统计，不是业绩逻辑。' +
       '<br><br><b>缓存：</b>历史规律（月线统计）只按自然月更新——本月第一次打开要算三十多秒，之后当月都是秒开；' +
       '榜单本身每 5 分钟用最新行情重算一次，所以现价、涨跌幅、主力资金这些是随盘面走的，不会冻结。' +

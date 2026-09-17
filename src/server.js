@@ -562,7 +562,8 @@ const SEASON_FAIL_COOLDOWN = 30 * 60 * 1000;
  */
 function monthlySeasonStats(code, monthKey, ttl) {
   return cached(
-    `mseason_${code}_${monthKey}`,
+    // 键里带 2：统计口径从"只看月末收盘"扩到"含月内最高（脉冲识别）"，旧缓存作废
+    `mseason2_${code}_${monthKey}`,
     ttl,
     async () => {
       if ((seasonFailUntil.get(code) || 0) > Date.now()) throw new Error('这只票的月线暂时拉不到，先跳过');
@@ -574,10 +575,8 @@ function monthlySeasonStats(code, monthKey, ttl) {
       seasonFailUntil.delete(code);
       const byMonth = {};
       for (let m = 1; m <= 12; m += 1) {
-        const s = seasonalEngine.seasonOf(k.bars, m);
-        if (s && s.total) {
-          byMonth[m] = { total: s.total, avgPct: s.avgPct, winRate: s.winRate, up: s.up };
-        }
+        const s = seasonalEngine.monthStatsWithPeak(k.bars, m);
+        if (s && s.total) byMonth[m] = s;
       }
       return Object.keys(byMonth).length ? byMonth : null;
     },
@@ -646,7 +645,7 @@ async function apiMonthly() {
     // 题材汇总只缓存 1 小时：成分股的季节统计是按月缓存的，汇总重算很便宜，
     // 但这样"这次没拉到的成分股"过一会儿能补上，而不是整月缺一块
     const themeData = await cached(
-      `monthly_themes_${monthKey}`,
+      `monthly_themes2_${monthKey}`,
       60 * 60 * 1000,
       async () => {
         const out = [];
@@ -663,6 +662,7 @@ async function apiMonthly() {
             hint: t.hint,
             months: season.months,
             active: season.active,
+            pulse: season.pulse,
             members: members.map((m) => ({ code: m.code, name: m.name })),
           });
         }
@@ -677,12 +677,16 @@ async function apiMonthly() {
     for (let m = 1; m <= 12; m += 1) themeBoard[m] = [];
     const themeOfStock = new Map();
     for (const t of themeData) {
-      for (const m of t.active) {
+      // 旺季月份 + 脉冲月份都列出来：脉冲型不给加分，但必须让用户看见
+      for (const m of [...new Set([...t.active, ...t.pulse])]) {
         themeBoard[m].push({
           code: t.code,
           name: t.name,
           hint: t.hint,
           stats: t.months[m],
+          pulse: !!t.months[m].pulse,
+          // 脉冲型（冲几天就还回去）不给加分，只在界面上标注出来
+          bonus: t.months[m].pulse ? 0 : themesEngine.THEME_BONUS,
           memberCount: t.members.length,
           stocks: t.members.slice(0, 6).map((mem) => {
             const q = snapByCode.get(mem.code) || {};
@@ -700,13 +704,16 @@ async function apiMonthly() {
         if (!themeOfStock.has(mem.code)) themeOfStock.set(mem.code, {});
         const byMonth = themeOfStock.get(mem.code);
         for (const m of t.active) {
+          if (t.months[m].pulse) continue; // 脉冲型不算"顺风"，不给加分
           if (!byMonth[m]) byMonth[m] = [];
           byMonth[m].push(t.name);
         }
       }
     }
     for (let m = 1; m <= 12; m += 1) {
-      themeBoard[m].sort((a, b) => (b.stats.avgPct || 0) - (a.stats.avgPct || 0));
+      // 趋势型排前面，脉冲型垫后
+      themeBoard[m].sort((a, b) => (a.pulse ? 1 : 0) - (b.pulse ? 1 : 0)
+        || (b.stats.avgPct || 0) - (a.stats.avgPct || 0));
     }
 
     // 把"踩在旺季题材上"的月份挂到候选股上，排序时会加分

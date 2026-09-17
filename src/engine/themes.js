@@ -13,15 +13,23 @@
  * 所以窗口不写死，市场自己说话；题材不行了，榜单里自然就不出现。
  */
 
-/** 备选题材：都是东方财富的概念板块代码，直接取成分股 */
+const seasonal = require('./seasonal');
+
+/** 备选题材：都是东方财富的板块代码（概念板块 + 行业板块），直接取成分股 */
 const SEASONAL_THEMES = [
   { code: 'BK1185', name: '冰雪经济', hint: '滑雪、冰雪旅游，通常入冬到春节前' },
   { code: 'BK0843', name: '天然气', hint: '北方供暖季的用气高峰' },
+  { code: 'BK0437', name: '煤炭', hint: '迎峰度冬、供暖补库' },
+  { code: 'BK0428', name: '电力', hint: '迎峰度夏的用电高峰' },
   { code: 'BK0896', name: '白酒', hint: '中秋国庆 + 春节备货' },
   { code: 'BK1073', name: '啤酒', hint: '夏季消费旺季' },
+  { code: 'BK1239', name: '白色家电', hint: '夏季空调、以旧换新' },
+  { code: 'BK1282', name: '饮料乳品', hint: '夏季饮料旺季' },
   { code: 'BK0485', name: '旅游酒店', hint: '节假日和暑期出行' },
-  { code: 'BK0847', name: '影视院线', hint: '春节档 + 暑期档' },
+  { code: 'BK1222', name: '影视院线', hint: '春节档 + 暑期档（典型脉冲型）' },
+  { code: 'BK1479', name: '航空运输', hint: '春运 + 暑运' },
   { code: 'BK0888', name: '农业种植', hint: '春耕 + 一号文件' },
+  { code: 'BK1515', name: '粮食种植', hint: '春耕、玉米种子' },
   { code: 'BK0927', name: '免税概念', hint: '旅游旺季带动' },
   { code: 'BK0490', name: '军工', hint: '建军节、国庆前后' },
   { code: 'BK1079', name: '户外露营', hint: '春秋出行' },
@@ -51,16 +59,20 @@ function mergeMonth(seasonalPerStock, month) {
   if (!rows.length) return null;
 
   const n = rows.length;
-  const avgPct = rows.reduce((a, b) => a + (Number.isFinite(b.avgPct) ? b.avgPct : 0), 0) / n;
-  const winRate = rows.reduce((a, b) => a + (Number.isFinite(b.winRate) ? b.winRate : 0), 0) / n;
-  return {
+  const avg = (key) => rows.reduce((a, b) => a + (Number.isFinite(b[key]) ? b[key] : 0), 0) / n;
+  const stat = {
     members: n,
     total: Math.min(...rows.map((r) => r.total)),
-    avgPct: round(avgPct, 2),
-    winRate: round(winRate, 1),
+    avgPct: round(avg('avgPct'), 2),
+    avgPeak: round(avg('avgPeak'), 2),
+    winRate: round(avg('winRate'), 1),
+    giveBack: round(avg('giveBack'), 2),
     // 这个月里"平均是涨的"成分股有几只，用来判断题材的普涨程度
     up: rows.filter((r) => (r.avgPct || 0) > 0).length,
   };
+  // 脉冲型：月内冲得起来，但大部分涨幅到月底又还回去了（春节档影视就是典型）
+  stat.pulse = seasonal.isPulse(stat);
+  return stat;
 }
 
 /** 这个月算不算这个题材的旺季 */
@@ -72,19 +84,26 @@ function isActive(stat, rule = ACTIVE_RULE) {
 }
 
 /**
- * 一个题材 12 个月的季节性 + 哪几个月是旺季。
+ * 一个题材 12 个月的季节性，并分出两类月份：
+ *   active（旺季）：月末涨幅和上涨占比都够，可以当整月顺风股；
+ *   pulse（脉冲）：月内冲得猛但月末基本白干，只能抢一把就跑。
+ * 样本太薄（成分股不够）的月份两个都不给，免得一两只票的噪声被当成题材规律。
+ *
  * @param {Array} seasonalPerStock 每个成分股的 12 个月季节统计
  */
-function themeSeason(seasonalPerStock, rule = ACTIVE_RULE) {
+function themeSeason(seasonalPerStock, rule = ACTIVE_RULE, pulseMinMembers = 3) {
   const months = {};
   const active = [];
+  const pulse = [];
   for (let m = 1; m <= 12; m += 1) {
     const stat = mergeMonth(seasonalPerStock, m);
     if (!stat) continue;
     months[m] = stat;
+    if (stat.members < pulseMinMembers) continue;
     if (isActive(stat, rule)) active.push(m);
+    else if (stat.pulse) pulse.push(m);
   }
-  return { months, active };
+  return { months, active, pulse };
 }
 
 module.exports = {
