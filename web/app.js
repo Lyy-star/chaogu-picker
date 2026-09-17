@@ -780,9 +780,112 @@
     setInterval(() => { tick().catch(() => {}); }, HOLDING_POLL_MS);
   }
 
-  /* ---------------------- 短线推荐（龙虎榜 + 席位追踪） ---------------------- */
+  /* ---------------------- 短线推荐（热门票 + 龙虎榜 + 席位追踪） ---------------------- */
 
   const shortTermCache = { data: null, loading: false };
+  const hotStockCache = { data: null, loading: false };
+
+  /* ---------- 热门票：全市场成交 / 换手 / 量比 / 强度 / 主力资金 ---------- */
+
+  function heatBadgeClass(score) {
+    if (score >= 92) return 'hot';
+    if (score < 70) return 'cold';
+    return '';
+  }
+
+  function hotStockRow(it) {
+    const row = el('div', 'hot-row');
+    const why = [
+      ...(it.reasons || []).slice(0, 2).map((r) => '· ' + esc(r)),
+      ...(it.risks || []).slice(0, 2).map((r) => '⚠ ' + esc(r)),
+    ].join('<br />');
+    row.innerHTML =
+      `<span class="hot-rank">${esc(String(it.rank))}</span>
+       <div class="hot-name clickable" title="点名称看完整分析">
+         <span class="stock-name">${esc(it.name)}</span>
+         <span class="stock-code">${esc(it.code)}</span>
+       </div>
+       <div class="hot-price ${pctClass(it.changePct)}">${num(it.price)}
+         <span class="sub">${pctText(it.changePct)}</span></div>
+       <div class="hot-score">
+         <span class="badge ${heatBadgeClass(it.score)}">热度 ${esc(String(it.score))}</span>
+         <span class="hot-verdict">${esc(it.verdict)}</span>
+       </div>
+       <div class="hot-tags">${(it.tags || [])
+         .map((t) => `<span class="badge">${esc(t)}</span>`)
+         .join('')}</div>
+       <button class="btn ghost hot-open">看图</button>
+       ${why ? `<div class="hot-why">${why}</div>` : ''}`;
+
+    row.querySelector('.hot-name').addEventListener('click', () => openDetail(it.code, null));
+    row.querySelector('.hot-open').addEventListener('click', () => openDetail(it.code, null));
+    return row;
+  }
+
+  function hotStockBox() {
+    const box = el('div', 'card');
+    box.innerHTML =
+      '<h3>热门票 <span class="badge">成交额 / 换手 / 量比 / 强度 / 主力资金</span></h3>' +
+      '<div id="hotBody" class="ev-impact">正在统计今天的全市场热度…</div>';
+    return box;
+  }
+
+  function paintHotStocks(d) {
+    const body = document.getElementById('hotBody');
+    if (!body) return;
+    body.classList.remove('ev-impact');
+    body.innerHTML = '';
+
+    const head = el('div', 'hot-note');
+    head.innerHTML =
+      `全市场 ${esc(String(d.counts.universe))} 只主板股里挑出热度最高的 ${esc(String((d.items || []).length))} 只` +
+      `（候选 ${esc(String(d.counts.candidates))} 只）· 更新于 ` +
+      `${new Date(d.at).toLocaleTimeString('zh-CN', { hour12: false })}`;
+    body.appendChild(head);
+
+    if (!(d.items || []).length) {
+      body.appendChild(emptyNode('今天没有算出热门票'));
+    } else {
+      const list = el('div', 'hot-list');
+      d.items.forEach((it) => list.appendChild(hotStockRow(it)));
+      body.appendChild(list);
+    }
+
+    if ((d.boards || []).length) {
+      const b = el('div', 'ev-impact');
+      b.innerHTML =
+        '今天的强势概念：' +
+        d.boards
+          .map((x) => `${esc(x.name)} <b class="${pctClass(x.changePct)}">${pctText(x.changePct)}</b>（领涨 ${esc(x.leaderName || '-')}）`)
+          .join('　');
+      body.appendChild(b);
+    }
+
+    const note = el('div', 'ev-impact');
+    note.innerHTML =
+      '热度的五个因子：成交额（按全市场分位给分）、换手率（12% 上下最热）、量比、当日强度、主力净流入占比。' +
+      '<br />热 ≠ 能买：涨停当天买不进，换手过高往往是高位分歧。先在这里找到钱在哪，再回到下面的龙虎榜推荐看谁在买。';
+    body.appendChild(note);
+  }
+
+  async function loadHotStocks() {
+    if (hotStockCache.data) {
+      paintHotStocks(hotStockCache.data);
+      return;
+    }
+    if (hotStockCache.loading) return;
+    hotStockCache.loading = true;
+    try {
+      hotStockCache.data = await api('/api/hotstocks');
+    } catch (err) {
+      hotStockCache.loading = false;
+      const body = document.getElementById('hotBody');
+      if (body) body.innerHTML = `热门票加载失败：${esc(err.message)}`;
+      return;
+    }
+    hotStockCache.loading = false;
+    paintHotStocks(hotStockCache.data);
+  }
 
   function shortTermCard(it) {
     const card = el('div', 'ev-card st-card');
@@ -836,8 +939,13 @@
     list.appendChild(head);
     head.querySelector('#stRefresh').addEventListener('click', async () => {
       shortTermCache.data = null;
+      hotStockCache.data = null;
       render();
     });
+
+    // 热门票排在最前面：先看今天的钱和眼球聚在哪，再看龙虎榜的席位
+    list.appendChild(hotStockBox());
+    loadHotStocks();
 
     if (!(d.items || []).length) {
       list.appendChild(emptyNode('最近一周没有符合条件的龙虎榜个股'));
@@ -938,11 +1046,14 @@
     $('#catTitle').textContent = '短线推荐';
     const cached = shortTermCache.data;
     $('#catHeadline').textContent = cached
-      ? `最近一周 ${cached.counts.candidates} 只上榜个股，按「历史胜率 35% + 席位 25% + 资金 20% + 技术位置 20%」排序`
-      : '正在拉取龙虎榜与席位数据…';
+      ? `全市场热门票 + 最近一周 ${cached.counts.candidates} 只龙虎榜个股，按「历史胜率 35% + 席位 25% + 资金 20% + 技术位置 20%」排序`
+      : '正在统计全市场热度、拉取龙虎榜与席位数据…';
     $('#catMethod').innerHTML =
-      '以龙虎榜为核心：先看最近一周谁上了榜、买方是哪些席位（机构专用 / 活跃游资 / 普通营业部），' +
-      '再回头统计这只票历史上榜后 5 日的胜率，最后叠上日线技术位置。' +
+      '<b>热门票</b>：把全市场主板个股按「成交额（全市场分位）+ 换手率 + 量比 + 当日强度 + 主力净流入占比」算一个热度分，' +
+      '回答的是"今天的钱和眼球聚在哪"；热不等于能买，涨停当天买不进、换手过高往往是高位分歧。' +
+      '<br><br><b>龙虎榜推荐</b>：看最近一周谁上了榜、买方是哪些席位（机构专用 / 活跃游资 / 普通营业部），' +
+      '再统计这只票历史上榜后 5 日的胜率，最后叠上日线技术位置。两个榜单可以对着看：' +
+      '又热又有席位的票，说明资金和人气都在。' +
       '<br><br><b>免责声明：</b>短线本质是概率游戏，这里的胜率是历史统计、席位是资金痕迹，都不代表下一次也会涨。' +
       '仓位和止损必须自己控制。';
 
@@ -964,6 +1075,9 @@
       if (state.tab !== 'shortterm') return;
       list.innerHTML = '';
       list.appendChild(emptyNode(`短线推荐加载失败：${err.message}`));
+      // 龙虎榜抓不到时，热门票是独立接口，照常显示
+      list.appendChild(hotStockBox());
+      loadHotStocks();
       return;
     }
     shortTermCache.loading = false;

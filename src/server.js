@@ -18,6 +18,7 @@ const holdingEngine = require('./engine/holding');
 const insightEngine = require('./engine/insight');
 const seasonalEngine = require('./engine/seasonal');
 const shortTermEngine = require('./engine/shortterm');
+const hotStockEngine = require('./engine/hotstock');
 const reviewEngine = require('./engine/review');
 const portfolio = require('./engine/portfolio');
 const mirror = require('./lib/mirror');
@@ -439,6 +440,72 @@ async function apiShortTerm() {
   }, { allowStale: true });
 }
 
+/**
+ * 热门票：全市场快照里「现在最热」的主板个股。
+ *
+ * 和短线推荐（龙虎榜）互补——那个回答"谁被资金选中了"，这个回答"眼球和钱现在在哪"。
+ * 热度只看五个东西：成交额（全市场分位）、换手率、量比、当日强度、主力资金。
+ * 前 12 只再补一次日线，用来看 5 日涨幅和连板高度，只加风险提示，不参与排序。
+ */
+// 「昨日连板」「机构重仓」这类派生板块不是题材，不往强势概念里放
+const BOARD_NOISE =
+  /昨日|连板|涨停|打板|触板|一字|次新|ST|退市|重仓|持仓|标普|罗素|MSCI|富时|转债|B股|AH股|百元股|低价股|高价股|破净|送转|壳资源|融资融券|股通/;
+
+async function apiHotStocks() {
+  return cached('hotstocks', 5 * 60 * 1000, async () => {
+    const now = new Date();
+    const [snap, boards, lhb] = await Promise.all([
+      em.marketSnapshot(),
+      em.boardRank('concept', 'change', 40).catch(() => []),
+      em.lhbBoard(shortTermEngine.dayBefore(3, now)).catch(() => []),
+    ]);
+
+    const lhbCodes = new Set((lhb || []).map((r) => String(r.SECURITY_CODE || '')));
+    const boardLeaders = new Map();
+    // 东方财富的「昨日连板 / 昨日涨停 / 机构重仓」这类是派生板块，不是题材，先剔掉
+    const themeBoards = (boards || []).filter((b) => !BOARD_NOISE.test(String(b.name || '')));
+    for (const b of themeBoards) {
+      if (b.leaderCode) boardLeaders.set(String(b.leaderCode), b.name);
+    }
+
+    const built = hotStockEngine.buildHotList(snap.rows, { limit: 12, lhbCodes, boardLeaders });
+
+    const items = await mapLimit(built.list, 4, async (c) => {
+      const k = await em.kline(c.code, { limit: 40 }).catch(() => null);
+      // 必须把当日涨跌幅一起带上：少了它，合成出来的今天这根 K 线没有 changePct，
+      // 连板天数就永远数成 0
+      const bars = k && k.bars ? mergeLiveBar(k.bars, { price: c.price, changePct: c.changePct }) : null;
+      const tech = bars ? buildContext(bars, c.price) : null;
+      return hotStockEngine.finalize(c, { tech, streak: hotStockEngine.limitUpStreak(bars) });
+    });
+    items.sort((a, b) => b.score - a.score);
+
+    return {
+      at: Date.now(),
+      counts: {
+        universe: snap.rows.length,
+        candidates: built.total,
+        partial: !!snap.partial,
+      },
+      items,
+      boards: themeBoards.slice(0, 6).map((b) => ({
+        code: b.code,
+        name: b.name,
+        changePct: b.changePct,
+        mainNetIn: b.mainNetIn,
+        leaderName: b.leaderName,
+        leaderCode: b.leaderCode,
+        leaderChangePct: b.leaderChangePct,
+      })),
+      notes: [
+        '热门票的口径是「眼球和资金现在集中在哪」：成交额按全市场分位给分（前 1% 才拿高分），换手率以 12% 为中心两头递减，再叠加量比、当日强度和主力净流入占比。',
+        '成交额大、换手高、涨停、主力净流入，都是「热」的证据，但热不等于能买——涨停当天根本买不进，换手过高往往是高位分歧。',
+        '所以看这个榜的正确姿势是：先用它找到今天钱在哪，再回到上面的龙虎榜推荐看谁在买、历史胜率如何。',
+      ],
+    };
+  }, { allowStale: true });
+}
+
 /** 历史规律（详情页的"我的看法"）：用长周期日线做季节性统计 */
 async function apiInsight(code) {
   return cached(`insight_${code}`, 12 * 60 * 60 * 1000, async () => {
@@ -718,6 +785,9 @@ async function handle(req, res) {
       }
       if (p === '/api/shortterm/review') {
         return sendJSON(res, { ok: true, data: await apiShortTermReview() });
+      }
+      if (p === '/api/hotstocks') {
+        return sendJSON(res, { ok: true, data: await apiHotStocks() });
       }
       if (p === '/api/picks') {
         const force = url.searchParams.get('force') === '1';

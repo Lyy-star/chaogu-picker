@@ -772,6 +772,41 @@ ul.risks li { margin-bottom: 6px; line-height: 1.65; }
 .sr-prob { color: var(--warn); font-variant-numeric: tabular-nums; font-weight: 600; }
 .sr-name { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* ---------------------- 短线推荐：热门票 ---------------------- */
+
+.hot-note { color: var(--text-dim); font-size: 12.5px; padding: 2px 0 8px; }
+.hot-list { margin-top: 8px; }
+.hot-row {
+  display: grid;
+  grid-template-columns: 30px minmax(150px, 1.1fr) 108px 132px minmax(220px, 1.8fr) 66px;
+  gap: 10px; align-items: center;
+  padding: 8px 0; border-top: 1px dashed var(--line);
+  font-size: 12.5px;
+}
+.hot-row:first-child { border-top: none; }
+.hot-rank {
+  text-align: center; font-weight: 600;
+  color: var(--text-faint); font-variant-numeric: tabular-nums;
+}
+.hot-row:nth-child(-n+3) .hot-rank { color: var(--warn); }
+.hot-name { display: flex; align-items: baseline; gap: 8px; cursor: pointer; }
+.hot-name:hover .stock-name { color: var(--accent); }
+.hot-price { font-variant-numeric: tabular-nums; }
+.hot-price .sub { margin-left: 6px; font-size: 11.5px; }
+.hot-score { display: flex; align-items: center; gap: 6px; }
+.hot-verdict { color: var(--text-dim); font-size: 11.5px; }
+.hot-tags { display: flex; flex-wrap: wrap; gap: 4px; }
+.hot-why {
+  grid-column: 1 / -1;
+  padding-left: 30px;
+  color: var(--text-dim); font-size: 12px; line-height: 1.75;
+}
+
+@media (max-width: 1180px) {
+  .hot-row { grid-template-columns: 26px minmax(130px, 1.1fr) 100px 120px 66px; }
+  .hot-tags { display: none; }
+}
+
 @media (max-width: 1180px) {
   .month-row { grid-template-columns: minmax(120px, 1.2fr) 90px minmax(150px, 1.4fr) 66px; }
   .mr-score { display: none; }
