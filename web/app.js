@@ -870,11 +870,67 @@
     }
     list.appendChild(seatBox);
 
+    // 每日复盘：异步加载，不挡上面的推荐列表
+    const reviewBox = el('div', 'card');
+    reviewBox.innerHTML =
+      '<h3>每日复盘 <span class="badge">收盘后回看最近十几个交易日</span></h3>' +
+      '<div id="stReviewBody" class="ev-impact">正在复盘…</div>';
+    list.appendChild(reviewBox);
+    loadShortTermReview();
+
     const noteBox = el('div', 'card');
     noteBox.innerHTML = `<h3>这份推荐是怎么算的</h3><ul class="plain">${(d.notes || [])
       .map((n) => `<li>${esc(n)}</li>`)
       .join('')}</ul>`;
     list.appendChild(noteBox);
+  }
+
+  /** 每日复盘：分档表 + 因子表 + 本次权重调整 */
+  async function loadShortTermReview() {
+    let d = null;
+    try {
+      d = await api('/api/shortterm/review');
+    } catch (err) {
+      const box = document.getElementById('stReviewBody');
+      if (box) box.innerHTML = `复盘加载失败：${esc(err.message)}`;
+      return;
+    }
+    const box = document.getElementById('stReviewBody');
+    if (!box) return;
+    box.classList.remove('ev-impact');
+
+    const rows = (arr, cells) => arr.map((x) => `<div class="seat-row">${cells(x).join('')}</div>`).join('');
+    const num2 = (v, suffix = '%') => (Number.isFinite(v) ? `${v}${suffix}` : '-');
+
+    const buckets = rows(d.buckets || [], (b) => [
+      `<span class="sr-times">${b.count} 只</span>`,
+      `<span class="sr-prob">${num2(b.d1Win)}</span>`,
+      `<span class="sr-name">${esc(b.label)}</span>`,
+      `<span class="stock-code">1 日均 ${num2(b.d1Avg)}</span>`,
+      `<span class="stock-code">5 日胜率 ${num2(b.d5Win)} · 均 ${num2(b.d5Avg)}</span>`,
+    ]);
+    const factors = rows(d.factors || [], (f) => [
+      `<span class="sr-times">${f.samples} 只</span>`,
+      `<span class="sr-prob">${f.edge === null ? '-' : (f.edge > 0 ? '+' : '') + f.edge}</span>`,
+      `<span class="sr-name">${esc(f.label)}</span>`,
+      `<span class="stock-code">高分组 ${num2(f.highAvg)}</span>`,
+      `<span class="stock-code">低分组 ${num2(f.lowAvg)}</span>`,
+    ]);
+
+    const w = d.weights || {};
+    const cn = { win: '历史胜率', seat: '席位', money: '资金', tech: '技术位置' };
+    const wt = Object.keys(cn).map((k) => `${cn[k]} ${w.current ? w.current[k] : '-'} → ${w.next ? w.next[k] : '-'}`).join('　');
+
+    box.innerHTML =
+      `<div class="ev-impact">复盘区间：最近 ${d.period.days} 个交易日，可评估 ${d.period.evaluated} / ${d.period.total} 条上榜记录</div>
+       <div class="ev-impact" style="margin-top:8px">分档表现（分数越高，事后是否真的越好）：</div>
+       <div class="seat-list">${buckets}</div>
+       <div class="ev-impact" style="margin-top:10px">因子表现（边际 = 高分组平均 5 日收益 − 低分组；正数说明这条逻辑这次有效）：</div>
+       <div class="seat-list">${factors}</div>
+       <div class="analysis-line"><b>本次权重调整：</b>${esc(wt)}<br />${esc(w.reason || '')}${
+         w.changed ? '（已应用，下一次推荐会用新权重）' : '（这次没有改动）'
+       }</div>
+       <ul class="plain">${(d.notes || []).map((n) => `<li>${esc(n)}</li>`).join('')}</ul>`;
   }
 
   async function renderShortTerm() {

@@ -20,6 +20,8 @@ const F = {
   d10: 'D10_CLOSE_ADJCHRATE',
 };
 
+const DEFAULT_WEIGHTS = { win: 0.35, seat: 0.25, money: 0.2, tech: 0.2 };
+
 function round(v, digits = 2) {
   if (!Number.isFinite(v)) return null;
   const p = 10 ** digits;
@@ -124,140 +126,75 @@ function seatProfile(seats) {
   };
 }
 
-/**
- * 第一轮打分（不用 K 线，只看龙虎榜数据）：
- * 从几百条上榜记录里挑出值得进一步看的票。
- */
-function scoreBase(row, { winRate, seat, sellSeat }) {
+/** 技术位置因子（只有拿到日线才算得出来） */
+function techFactor(tech) {
   const reasons = [];
   const risks = [];
-  let score = 42;
-  const weights = { win: 0.35, seat: 0.25, money: 0.2, tech: 0.2 };
+  if (!tech) return { score: 50, reasons, risks };
 
-  /* 资金面 */
-  const net = num(row.BILLBOARD_NET_AMT) || 0;
-  const netRatio = num(row.DEAL_NET_RATIO);
-  if (net >= 2e8) {
-    score += 9;
-    reasons.push(`龙虎榜净买入 ${round(net / 1e8)} 亿元，资金介入很深`);
-  } else if (net >= 5e7) {
-    score += 5;
-    reasons.push(`龙虎榜净买入约 ${round(net / 1e8)} 亿元，有资金在做`);
-  } else if (net <= -5e7) {
-    score -= 12;
-    risks.push(`龙虎榜净卖出约 ${round(Math.abs(net) / 1e8)} 亿元，是资金在出，不是在进`);
-  }
-  if (netRatio !== null && netRatio >= 5) {
-    score += 4;
-    reasons.push(`净买入占成交额 ${round(netRatio)}%，当天是主动买上去的`);
-  }
-
-  /* 席位质量 */
-  if (seat) {
-    if (seat.instCount >= 2) {
-      score += 5;
-      reasons.push(`买方有 ${seat.instCount} 个机构专用席位，机构在参与`);
-    }
-    if (seat.activeCount > 0) {
-      score += Math.min(8, 4 + seat.activeCount);
-      reasons.push(`买方有 ${seat.activeCount} 个近三个月活跃席位（${seat.activeNames.join('、')}），一线游资在动手`);
-    }
-    if (seat.topProb !== null && seat.topProb >= 55) {
-      score += 4;
-      reasons.push(`买方最强席位近 3 日上涨概率 ${round(seat.topProb, 1)}%，历史手感不错`);
-    }
-    if (!seat.instCount && !seat.activeCount) {
-      risks.push('买方席位比较普通，没有明显的一线游资或机构');
+  let s = 50;
+  if (Number.isFinite(tech.ma5) && Number.isFinite(tech.ma10)) {
+    if (tech.price > tech.ma5 && tech.ma5 > tech.ma10) {
+      s += 12;
+      reasons.push('现价在 5 日线上方、且 5 日线在 10 日线上方，短线是强势结构');
+    } else if (tech.price < tech.ma10) {
+      s -= 15;
+      risks.push('已经跌破 10 日线，短线结构转弱');
     }
   }
-  if (sellSeat && sellSeat.instCount > 0) {
-    score -= 6;
-    risks.push(`卖方出现 ${sellSeat.instCount} 个机构专用席位，机构在减仓`);
-  }
-
-  /* 历史胜率 */
-  if (winRate && winRate.samples >= 4) {
-    if (winRate.winRate >= 65) {
-      score += 10;
-      reasons.push(
-        `这只票历史上榜 ${winRate.samples} 次，5 日胜率 ${winRate.winRate}%，平均 ${winRate.avgD5 > 0 ? '+' : ''}${winRate.avgD5}%`,
-      );
-    } else if (winRate.winRate >= 50) {
-      score += 3;
-      reasons.push(`历史上榜 ${winRate.samples} 次，5 日胜率 ${winRate.winRate}%，平均 ${winRate.avgD5}%`);
-    } else if (winRate.winRate <= 35) {
-      score -= 12;
-      risks.push(`历史上榜 ${winRate.samples} 次，5 日胜率只有 ${winRate.winRate}%，上榜后经常回落`);
+  if (Number.isFinite(tech.position)) {
+    if (tech.position >= 0.9) {
+      s -= 15;
+      risks.push('处在近 60 日最高位附近，追高风险大');
+    } else if (tech.position <= 0.35) {
+      s += 10;
+      reasons.push(`处在近 60 日区间 ${Math.round(tech.position * 100)}% 的位置，算相对低位`);
     }
-  } else {
-    weights.win = 0.15;
-    weights.tech += 0.1;
-    weights.money += 0.1;
-    risks.push('这只票历史样本不足 4 次，胜率的参考价值有限');
   }
-
-  /* 上榜原因 */
-  const explain = String(row.EXPLAIN || '');
-  const reason = String(row.EXPLANATION || '');
-  if (explain.includes('机构买入')) {
-    score += 3;
-    reasons.push(`上榜原因：${explain}`);
-  } else if (explain.includes('机构卖出')) {
-    score -= 5;
-    risks.push(`上榜原因：${explain}`);
-  } else if (explain) {
-    reasons.push(`上榜原因：${explain}`);
+  if (Number.isFinite(tech.chg5Pct) && tech.chg5Pct > 25) {
+    s -= 15;
+    risks.push(`近 5 个交易日已经涨了 ${tech.chg5Pct}%，再进就是接力`);
   }
-  if (/连续三个交易日|涨幅偏离值累计/.test(reason)) {
-    risks.push('属于多日大涨后的上榜，位置已经不低');
+  if (Number.isFinite(tech.atrPct) && tech.atrPct > 8) {
+    risks.push(`日均波动 ${tech.atrPct}%，题材票波动大，仓位要压住`);
   }
-
-  const chg = num(row.CHANGE_RATE);
-  if (chg !== null) {
-    if (chg >= 9.8) reasons.push('当日涨停上榜，属于强势票');
-    else if (chg <= -9.8) risks.push('当日跌停上榜，别在这种票上抢反弹');
-  }
-
-  return { score: Math.max(0, Math.min(100, Math.round(score))), reasons, risks, weights };
+  return { score: clamp100(s), reasons, risks };
 }
 
-/** 第二轮：带上 K 线技术位置，出最终分和建议 */
-function scoreFinal(base, { tech }) {
-  let score = base.score;
-  const reasons = [...base.reasons];
-  const risks = [...base.risks];
+function verdictOf(score) {
+  if (score >= 78) return '重点关注';
+  if (score >= 66) return '可低吸';
+  if (score >= 52) return '观察';
+  return '回避';
+}
 
-  if (tech) {
-    if (Number.isFinite(tech.ma5) && Number.isFinite(tech.ma10)) {
-      if (tech.price > tech.ma5 && tech.ma5 > tech.ma10) {
-        score += 6;
-        reasons.push('现价在 5 日线上方、且 5 日线在 10 日线上方，短线是强势结构');
-      } else if (tech.price < tech.ma10) {
-        score -= 9;
-        risks.push('已经跌破 10 日线，短线结构转弱');
-      }
-    }
-    if (Number.isFinite(tech.position)) {
-      if (tech.position >= 0.9) {
-        score -= 10;
-        risks.push('处在近 60 日最高位附近，追高风险大');
-      } else if (tech.position <= 0.35) {
-        score += 5;
-        reasons.push(`处在近 60 日区间 ${Math.round(tech.position * 100)}% 的位置，算相对低位`);
-      }
-    }
-    if (Number.isFinite(tech.chg5Pct) && tech.chg5Pct > 25) {
-      score -= 10;
-      risks.push(`近 5 个交易日已经涨了 ${tech.chg5Pct}%，再进就是接力`);
-    }
-    if (Number.isFinite(tech.atrPct) && tech.atrPct > 8) {
-      risks.push(`日均波动 ${tech.atrPct}%，题材票波动大，仓位要压住`);
-    }
-  }
+/** 第一轮：不用 K 线，直接出分（用来给候选排序） */
+function scoreBase(row, ctx = {}) {
+  const { parts, reasons, risks } = factorScores(row, ctx);
+  // 记住"原始权重"：第二轮补上技术因子时要用它重算，
+  // 否则第一轮把技术权重分给别的因子后，技术好坏就不影响结果了
+  const weights = { ...DEFAULT_WEIGHTS, ...(ctx.weights || {}) };
+  const combined = combineParts(parts, weights);
+  return {
+    score: combined.score,
+    parts,
+    weights,
+    verdict: verdictOf(combined.score),
+    reasons,
+    risks,
+  };
+}
 
-  const final = Math.max(0, Math.min(96, Math.round(score)));
-  const verdict = final >= 78 ? '重点关注' : final >= 66 ? '可低吸' : final >= 52 ? '观察' : '回避';
-  return { score: final, verdict, reasons: reasons.slice(0, 6), risks: risks.slice(0, 3) };
+/** 第二轮：补上技术位置因子，重算总分 */
+function scoreFinal(base, { tech } = {}) {
+  const f = techFactor(tech);
+  const combined = combineParts({ ...base.parts, tech: f.score }, base.weights);
+  return {
+    score: combined.score,
+    verdict: verdictOf(combined.score),
+    reasons: [...base.reasons, ...f.reasons].slice(0, 6),
+    risks: [...base.risks, ...f.risks].slice(0, 3),
+  };
 }
 
 /**
@@ -269,7 +206,7 @@ function scoreFinal(base, { tech }) {
  * @param {Array} p.historyRows 近几个月的历史龙虎榜（算个股胜率）
  * @param {number} p.maxCandidates 进入第二轮（要拉 K 线）的只数
  */
-function buildCandidates({ boardRows, seatRows, sellRows, historyRows, maxCandidates = 12 }) {
+function buildCandidates({ boardRows, seatRows, sellRows, historyRows, maxCandidates = 12, weights }) {
   const latest = new Map();
   for (const r of boardRows || []) {
     const code = String(r.SECURITY_CODE || '');
@@ -306,7 +243,7 @@ function buildCandidates({ boardRows, seatRows, sellRows, historyRows, maxCandid
     const winRate = winRateOf(history.get(code) || []);
     const seat = seatProfile(seatMap.get(`${code}|${date}`) || []);
     const sellSeat = seatProfile(sellMap.get(`${code}|${date}`) || []);
-    const base = scoreBase(row, { winRate, seat, sellSeat });
+    const base = scoreBase(row, { winRate, seat, sellSeat, weights });
 
     out.push({
       code,
@@ -363,6 +300,7 @@ function hotSeats(seatRows, { days = 5, limit = 10, base = new Date() } = {}) {
 }
 
 module.exports = {
+  DEFAULT_WEIGHTS,
   buildCandidates,
   hotSeats,
   winRateOf,
@@ -373,3 +311,141 @@ module.exports = {
   isMainBoard,
   isST,
 };
+
+function clamp100(v) {
+  return Math.max(0, Math.min(100, v));
+}
+
+/**
+ * 四个因子各自打 0-100 分。
+ * 分因子打分（而不是直接加减总分）是为了让权重真正生效：
+ * 复盘之后调整权重，推荐结果就会跟着变。
+ */
+function factorScores(row, { winRate, seat, sellSeat }) {
+  const reasons = [];
+  const risks = [];
+
+  /* 资金面 */
+  let money = 50;
+  const net = num(row.BILLBOARD_NET_AMT) || 0;
+  const ratio = num(row.DEAL_NET_RATIO);
+  if (net >= 2e8) {
+    money += 22;
+    reasons.push(`龙虎榜净买入 ${round(net / 1e8)} 亿元，资金介入很深`);
+  } else if (net >= 5e7) {
+    money += 12;
+    reasons.push(`龙虎榜净买入约 ${round(net / 1e8)} 亿元，有资金在做`);
+  } else if (net > 0) {
+    money += 4;
+  } else if (net <= -5e7) {
+    money -= 28;
+    risks.push(`龙虎榜净卖出约 ${round(Math.abs(net) / 1e8)} 亿元，是资金在出，不是在进`);
+  } else {
+    money -= 10;
+  }
+  if (ratio !== null) {
+    if (ratio >= 10) {
+      money += 12;
+      reasons.push(`净买入占成交额 ${round(ratio)}%，当天是主动买上去的`);
+    } else if (ratio >= 5) {
+      money += 6;
+      reasons.push(`净买入占成交额 ${round(ratio)}%`);
+    }
+  }
+
+  /* 席位 */
+  let seatScore = 45;
+  if (seat && seat.count) {
+    if (seat.instCount >= 2) {
+      seatScore += 12;
+      reasons.push(`买方有 ${seat.instCount} 个机构专用席位，机构在参与`);
+    }
+    if (seat.activeCount > 0) {
+      seatScore += Math.min(25, 10 + seat.activeCount * 4);
+      reasons.push(
+        `买方有 ${seat.activeCount} 个近三个月活跃席位（${(seat.activeNames || []).join('、')}），一线游资在动手`,
+      );
+    }
+    if (seat.topProb !== null && seat.topProb >= 55) {
+      seatScore += 8;
+      reasons.push(`买方最强席位近 3 日上涨概率 ${round(seat.topProb, 1)}%，历史手感不错`);
+    }
+    if (!seat.instCount && !seat.activeCount) {
+      risks.push('买方席位比较普通，没有明显的一线游资或机构');
+    }
+  } else {
+    seatScore = 38;
+    risks.push('没有取到这只票的买方席位明细');
+  }
+  if (sellSeat && sellSeat.instCount > 0) {
+    seatScore -= Math.min(25, sellSeat.instCount * 6);
+    risks.push(`卖方出现 ${sellSeat.instCount} 个机构专用席位，机构在减仓`);
+  }
+
+  /* 历史胜率（样本不足就留空，权重会自动让给别的因子） */
+  let win = null;
+  if (winRate && winRate.samples >= 4) {
+    win = 50 + (winRate.winRate - 50) * 1.1 + (winRate.avgD5 || 0) * 1.6;
+    reasons.push(
+      `历史上榜 ${winRate.samples} 次，5 日胜率 ${winRate.winRate}%，平均 ${winRate.avgD5 > 0 ? '+' : ''}${winRate.avgD5}%`,
+    );
+    if (winRate.winRate <= 35) risks.push(`5 日胜率只有 ${winRate.winRate}%，上榜后经常回落`);
+  } else {
+    risks.push('这只票历史样本不足 4 次，胜率的参考价值有限');
+  }
+
+  /* 上榜原因 */
+  const explain = String(row.EXPLAIN || '');
+  if (explain.includes('机构买入')) {
+    seatScore += 4;
+    reasons.push(`上榜原因：${explain}`);
+  } else if (explain.includes('机构卖出')) {
+    seatScore -= 6;
+    risks.push(`上榜原因：${explain}`);
+  } else if (explain) {
+    reasons.push(`上榜原因：${explain}`);
+  }
+  if (/连续三个交易日|涨幅偏离值累计/.test(String(row.EXPLANATION || ''))) {
+    risks.push('属于多日大涨后的上榜，位置已经不低');
+  }
+
+  const chg = num(row.CHANGE_RATE);
+  if (chg !== null && chg >= 9.8) reasons.push('当日涨停上榜，属于强势票');
+  if (chg !== null && chg <= -9.8) risks.push('当日跌停上榜，别在这种票上抢反弹');
+
+  return {
+    parts: {
+      money: clamp100(money),
+      seat: clamp100(seatScore),
+      win: win === null ? null : clamp100(win),
+      tech: null,
+    },
+    reasons,
+    risks,
+  };
+}
+
+/** 按权重把四个因子合成总分；缺哪个因子，就把它的权重分给别的因子 */
+function combineParts(parts, weights) {
+  const w = { ...DEFAULT_WEIGHTS, ...(weights || {}) };
+  const p = { ...parts };
+
+  if (p.win === null || p.win === undefined) {
+    const extra = w.win;
+    w.win = 0;
+    w.money += extra / 2;
+    w.tech += extra / 2;
+    p.win = 50;
+  }
+  if (p.tech === null || p.tech === undefined) {
+    const extra = w.tech;
+    w.tech = 0;
+    w.money += extra / 2;
+    w.seat += extra / 2;
+    p.tech = 50;
+  }
+
+  const total = w.win + w.seat + w.money + w.tech || 1;
+  const score = (p.win * w.win + p.seat * w.seat + p.money * w.money + p.tech * w.tech) / total;
+  return { score: Math.round(clamp100(score)), weights: w };
+}

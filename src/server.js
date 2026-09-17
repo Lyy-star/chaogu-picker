@@ -18,6 +18,7 @@ const holdingEngine = require('./engine/holding');
 const insightEngine = require('./engine/insight');
 const seasonalEngine = require('./engine/seasonal');
 const shortTermEngine = require('./engine/shortterm');
+const reviewEngine = require('./engine/review');
 const portfolio = require('./engine/portfolio');
 const mirror = require('./lib/mirror');
 const { cached, invalidate } = require('./lib/cache');
@@ -221,6 +222,122 @@ async function apiHoldingsAdvice(body = {}) {
   return { at: Date.now(), cash, items: out };
 }
 
+/* -------- 短线推荐的权重（会被每日复盘微调，存在本机） -------- */
+
+function stWeightsFile() {
+  return path.join(cfg.USER_DIR, 'shortterm-weights.json');
+}
+
+function stSnapshotFile() {
+  return path.join(cfg.USER_DIR, 'shortterm-snapshot.json');
+}
+
+function loadStState() {
+  try {
+    const j = JSON.parse(fs.readFileSync(stWeightsFile(), 'utf8'));
+    if (j && j.weights && Object.keys(j.weights).length) return { history: [], ...j };
+  } catch (_) {
+    /* 第一次运行没有这个文件 */
+  }
+  return { weights: { ...shortTermEngine.DEFAULT_WEIGHTS }, updatedAt: null, history: [] };
+}
+
+function saveStState(state) {
+  try {
+    fs.mkdirSync(path.dirname(stWeightsFile()), { recursive: true });
+    fs.writeFileSync(stWeightsFile(), JSON.stringify(state, null, 2));
+  } catch (_) {
+    /* 写不进去也不能影响推荐 */
+  }
+}
+
+/** 每天留下一份推荐快照，复盘时用来对账 */
+function saveStSnapshot(items) {
+  try {
+    const today = new Date().toISOString().slice(0, 10);
+    fs.mkdirSync(path.dirname(stSnapshotFile()), { recursive: true });
+    fs.writeFileSync(
+      stSnapshotFile(),
+      JSON.stringify({
+        date: today,
+        at: Date.now(),
+        top: (items || []).slice(0, 12).map((x) => ({
+          code: x.code, name: x.name, score: x.score, verdict: x.verdict, price: x.price,
+        })),
+      }, null, 2),
+    );
+  } catch (_) {
+    /* 忽略 */
+  }
+}
+
+function loadStSnapshot() {
+  try {
+    return JSON.parse(fs.readFileSync(stSnapshotFile(), 'utf8'));
+  } catch (_) {
+    return null;
+  }
+}
+
+/**
+ * 每日复盘：用最近十几个交易日的龙虎榜做回测（当时可见信息 → 打分 → 真实 D1/D5），
+ * 统计分档表现与因子表现，然后小幅调整权重，下一次推荐就会用新权重。
+ */
+async function apiShortTermReview() {
+  return cached('shortterm_review', 60 * 60 * 1000, async () => {
+    const now = new Date();
+    const [board, seats] = await Promise.all([
+      em.lhbBoard(shortTermEngine.dayBefore(120, now)).catch(() => []),
+      em.lhbBuySeats(shortTermEngine.dayBefore(14, now)).catch(() => []),
+    ]);
+
+    const state = loadStState();
+    const entries = reviewEngine.backtest({ boardRows: board, seatRows: seats, weights: state.weights, days: 12 });
+    const summary = reviewEngine.summarize(entries);
+    const suggestion = reviewEngine.suggestWeights(state.weights, summary.factors, {});
+
+    let applied = false;
+    if (suggestion.changed) {
+      saveStState({
+        weights: suggestion.weights,
+        updatedAt: Date.now(),
+        history: [...(state.history || []).slice(-19), {
+          at: Date.now(),
+          from: state.weights,
+          to: suggestion.weights,
+          delta: suggestion.delta,
+          moved: suggestion.moved,
+        }],
+      });
+      applied = true;
+    }
+
+    const snapshot = loadStSnapshot();
+    return {
+      at: Date.now(),
+      period: { days: 12, total: summary.total, evaluated: summary.evaluated },
+      buckets: summary.buckets,
+      factors: summary.factors,
+      weights: {
+        current: state.weights,
+        next: suggestion.weights,
+        delta: suggestion.delta || {},
+        moved: suggestion.moved || [],
+        changed: applied,
+        reason: suggestion.reason,
+        updatedAt: state.updatedAt,
+      },
+      snapshot: snapshot ? { date: snapshot.date, top: (snapshot.top || []).slice(0, 6) } : null,
+      notes: [
+        '复盘口径：用「当时能看到的信息」（该日之前的龙虎榜历史 + 当日席位）按当前权重给每个上榜个股打分，再用东方财富记录的 D1 / D5 真实收益检验。',
+        '分档表告诉你"高分档是不是真的比低分档好"；因子表告诉你"这次是哪条逻辑起了作用、哪条失灵了"。',
+        '权重调整是小步（最多 ±25% 再归一化）并且限制在 10%~45% 之间，样本少于 40 条就不调——单日样本太小，避免被偶然结果带偏。',
+        '这是启发式的自我校准，不是机器学习，也不保证越调越准；它只能让"你相信的逻辑"和"实际赚钱的逻辑"慢慢靠近。',
+      ],
+    };
+  }, { allowStale: true });
+}
+
 /**
  * 短线推荐：以龙虎榜为核心，做席位追踪 + 个股历史胜率。
  *
@@ -232,6 +349,7 @@ async function apiHoldingsAdvice(body = {}) {
 async function apiShortTerm() {
   return cached('shortterm', 30 * 60 * 1000, async () => {
     const now = new Date();
+    const stState = loadStState();
     const recentFrom = shortTermEngine.dayBefore(7, now);
     const historyFrom = shortTermEngine.dayBefore(120, now);
 
@@ -249,6 +367,7 @@ async function apiShortTerm() {
       // 历史拉不到就退化成"只用近一周"，胜率会标样本不足
       historyRows: history.length ? history : recent,
       maxCandidates: 12,
+      weights: stState.weights,
     });
 
     const items = await mapLimit(built.list, 4, async (c) => {
@@ -296,6 +415,7 @@ async function apiShortTerm() {
     });
     // 第二轮的最终分才是排序依据
     items.sort((a, b) => b.score - a.score);
+    saveStSnapshot(items);
 
     return {
       at: Date.now(),
@@ -307,6 +427,7 @@ async function apiShortTerm() {
         candidates: built.total,
       },
       items,
+      weights: stState.weights,
       hotSeats: shortTermEngine.hotSeats(seats, { days: 5, limit: 10, base: now }),
       notes: [
         `候选来自最近一周登过龙虎榜的主板个股（剔除 ST），共 ${built.total} 只，按龙虎榜数据先排一轮，再给前 12 只补日线技术位置。`,
@@ -594,6 +715,9 @@ async function handle(req, res) {
       }
       if (p === '/api/shortterm') {
         return sendJSON(res, { ok: true, data: await apiShortTerm() });
+      }
+      if (p === '/api/shortterm/review') {
+        return sendJSON(res, { ok: true, data: await apiShortTermReview() });
       }
       if (p === '/api/picks') {
         const force = url.searchParams.get('force') === '1';
