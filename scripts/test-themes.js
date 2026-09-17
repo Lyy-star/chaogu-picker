@@ -92,6 +92,56 @@ const thin = themes.themeSeason([
 ]);
 check(!thin.pulse.includes(2) && !thin.active.includes(2), '只有 2 只成分股有数据的月份，两个名单都不进');
 
+// ---- 5. 月内峰值时点：几号、第几个交易日、离春节多久 ----
+console.log('\n== 月内峰值时点 ==');
+const ymd = (d) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+
+/** 造一段日线：价格在"距春节后第 peakOffset 个交易日"见顶，前后线性回落 */
+function syntheticSpringBars(years, peakOffset) {
+  const days = [];
+  for (const d = new Date(years[0] - 1, 11, 1); d <= new Date(years[years.length - 1], 2, 31); d.setDate(d.getDate() + 1)) {
+    if (d.getDay() !== 0 && d.getDay() !== 6) days.push(new Date(d));
+  }
+  const anchors = new Map();
+  for (const y of years) {
+    const sf = themes.SPRING_FESTIVAL[y];
+    anchors.set(y, days.findIndex((d) => ymd(d) >= sf));
+  }
+  return days.map((d, i) => {
+    const a = anchors.get(d.getFullYear());
+    const x = a === undefined || a < 0 ? null : i - a;
+    return { date: ymd(d), close: x === null ? 100 : Math.max(1, 100 + (20 - Math.abs(x - peakOffset) * 1.2)) };
+  });
+}
+
+const years = [2020, 2021, 2022, 2023, 2024, 2025, 2026];
+const springBars = syntheticSpringBars(years, -5); // 峰值在春节前 5 个交易日
+// 复制几份当作"多只成分股"，让样本数够
+const timingFeb = themes.peakTiming([springBars, springBars, springBars], 2, { now: new Date('2026-09-18') });
+check(!!timingFeb, '春节档题材能算出 2 月的峰值时点');
+check(
+  Number.isFinite(timingFeb && timingFeb.holidayMid) && Math.abs(timingFeb.holidayMid + 5) <= 1,
+  `峰值相对春节的偏移算得对（中位数 ${timingFeb && timingFeb.holidayMid} 个交易日，真值 -5）`,
+);
+check(
+  timingFeb && Number.isFinite(timingFeb.dayMid) && timingFeb.dayMid >= 1 && timingFeb.dayMid <= 28,
+  `2 月峰值落在 ${timingFeb && timingFeb.dayLow}-${timingFeb && timingFeb.dayHigh} 日（中位 ${timingFeb && timingFeb.dayMid} 日）`,
+);
+
+// 9 月这种离春节很远的月份，不该提"离春节几个交易日"
+const timingSep = themes.peakTiming([springBars, springBars, springBars], 9, { now: new Date('2026-09-18') });
+check(
+  !timingSep || !Number.isFinite(timingSep.holidayMid),
+  '离春节很远的月份不会硬扯"离春节几个交易日"',
+);
+
+// 样本太少就不给时点结论
+check(themes.peakTiming([springBars], 2, { now: new Date('2026-09-18') }) === null
+  || themes.peakTiming([springBars], 2, { now: new Date('2026-09-18') }).dayMid === undefined
+  || themes.peakTiming([springBars], 2, { now: new Date('2026-09-18') }).samples < 4,
+  '样本太少的月份不硬给时点');
+
 console.log('\n== 规则参数 ==');
 check(seasonal.PULSE_RULE.minPeakPct === 6, `脉冲门槛：月内最高涨幅 ≥ ${seasonal.PULSE_RULE.minPeakPct}%`);
 check(seasonal.PULSE_RULE.maxEndPct === 2, `脉冲门槛：月末涨幅 ≤ ${seasonal.PULSE_RULE.maxEndPct}%`);

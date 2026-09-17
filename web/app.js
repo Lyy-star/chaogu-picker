@@ -1195,8 +1195,34 @@
     return `<div class="zodiac-note">${lines.join('<br />')}</div>`;
   }
 
+  /** 月内峰值大概出现在什么时候：几号、第几个交易日、离春节几个交易日 */
+  function themeTimingText(t, monthLabel) {
+    const tm = t.timing;
+    if (!tm) return '';
+    let s = '';
+    if (Number.isFinite(tm.dayMid)) {
+      const dayRange = tm.dayLow === tm.dayHigh
+        ? `${esc(monthLabel)}${tm.dayMid} 日`
+        : `${esc(monthLabel)}${tm.dayLow}–${tm.dayHigh} 日`;
+      const tradeRange = tm.tradeLow === tm.tradeHigh
+        ? `第 ${tm.tradeMid} 个交易日`
+        : `第 ${tm.tradeLow}~${tm.tradeHigh} 个交易日`;
+      s = `峰值一般在 ${dayRange}（${tradeRange}）`;
+    }
+    if (Number.isFinite(tm.holidayMid)) {
+      const v = tm.holidayMid;
+      const holiday = v < 0
+        ? `对${esc(tm.holidayName || '春节')}来说，峰值中位数在节前 ${-v} 个交易日（节前买、节后走）`
+        : v > 0
+          ? `对${esc(tm.holidayName || '春节')}来说，峰值中位数在节后 ${v} 个交易日`
+          : `峰值中位数正好在${esc(tm.holidayName || '春节')}前后`;
+      s = s ? `${s}；${holiday}` : holiday;
+    }
+    return s ? `${s}（${esc(String(tm.samples || 0))} 个样本）` : '';
+  }
+
   /** 旺季题材的一行：趋势型和脉冲型用同一套结构，脉冲型多一段"冲高又回吐"的说明 */
-  function themeRowNode(t) {
+  function themeRowNode(t, monthLabel) {
     const s = t.stats || {};
     const row = el('div', t.pulse ? 'theme-row pulse' : 'theme-row');
     const peakText = Number.isFinite(s.avgPeak)
@@ -1225,7 +1251,8 @@
              `<span class="theme-stock" data-code="${esc(x.code)}">${esc(x.name)}
                 <b class="${pctClass(x.changePct)}">${pctText(x.changePct)}</b></span>`,
          )
-         .join('')}</div>`;
+         .join('')}</div>
+       ${themeTimingText(t, monthLabel) ? `<div class="theme-timing">⏱ ${themeTimingText(t, monthLabel)}</div>` : ''}`;
     row.querySelectorAll('.theme-stock').forEach((n) => {
       n.addEventListener('click', () => openDetail(n.dataset.code, null));
     });
@@ -1317,7 +1344,7 @@
       const trend = themes.filter((t) => !t.pulse);
       const pulse = themes.filter((t) => t.pulse);
       const wrap = el('div', 'theme-list');
-      [...trend, ...pulse].forEach((t) => wrap.appendChild(themeRowNode(t)));
+      [...trend, ...pulse].forEach((t) => wrap.appendChild(themeRowNode(t, label)));
       themeBox.appendChild(wrap);
       themeBox.insertAdjacentHTML(
         'beforeend',

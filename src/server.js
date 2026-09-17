@@ -656,6 +656,25 @@ async function apiMonthly() {
           const stats = await mapLimit(members, 6, (m) =>
             monthlySeasonStats(m.code, monthKey, seasonTtl).catch(() => null));
           const season = themesEngine.themeSeason(stats);
+          // 月内峰值时点：月线看不出"冲高在哪几天"，得用日线算。
+          // 单独按月缓存，免得题材汇总每小时重算时反复拉日线。
+          const timing = await cached(
+            `theme_timing_${t.code}_${monthKey}`,
+            seasonTtl,
+            async () => {
+              const bars = await mapLimit(
+                members.slice(0, cfg.SELECT.themeTimingMembers),
+                4,
+                (m) => em.kline(m.code, { limit: cfg.SELECT.themeTimingLimit })
+                  .then((k) => (k && k.bars) || null)
+                  .catch(() => null),
+              );
+              const byMonth = {};
+              for (let m = 1; m <= 12; m += 1) byMonth[m] = themesEngine.peakTiming(bars, m, { now });
+              return byMonth;
+            },
+            { disk: true },
+          );
           out.push({
             code: t.code,
             name: t.name,
@@ -663,6 +682,7 @@ async function apiMonthly() {
             months: season.months,
             active: season.active,
             pulse: season.pulse,
+            timing,
             members: members.map((m) => ({ code: m.code, name: m.name })),
           });
         }
@@ -685,6 +705,7 @@ async function apiMonthly() {
           hint: t.hint,
           stats: t.months[m],
           pulse: !!t.months[m].pulse,
+          timing: (t.timing && t.timing[m]) || null,
           // 脉冲型（冲几天就还回去）不给加分，只在界面上标注出来
           bonus: t.months[m].pulse ? 0 : themesEngine.THEME_BONUS,
           memberCount: t.members.length,
