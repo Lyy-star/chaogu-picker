@@ -584,6 +584,29 @@ function monthlySeasonStats(code, monthKey, ttl) {
   );
 }
 
+/**
+ * 单只票的"月内峰值时点"（12 个月各一份），按 (代码, 年月) 落盘缓存。
+ *
+ * 月线看不出冲高在哪几天，得用日线。日线本身只放内存（disk:false）——
+ * 两百多只票的日线落盘每月要多占几十兆，而真正要留的只是算出来的那点时点信息。
+ */
+function stockTiming(code, monthKey, ttl, now) {
+  return cached(
+    `stock_timing_${code}_${monthKey}`,
+    ttl,
+    async () => {
+      const k = await em
+        .kline(code, { limit: cfg.SELECT.stockTimingLimit }, { disk: false })
+        .catch(() => null);
+      if (!k || !k.bars || !k.bars.length) return null;
+      const byMonth = {};
+      for (let m = 1; m <= 12; m += 1) byMonth[m] = themesEngine.peakTiming([k.bars], m, { now });
+      return Object.values(byMonth).some(Boolean) ? byMonth : null;
+    },
+    { disk: true },
+  );
+}
+
 async function apiMonthly() {
   // 榜单本身只缓存 5 分钟：价格、涨跌幅、主力资金这些"日常数据"每次都用最新快照重算。
   // 真正重的月线统计在下面按自然月缓存，一个月只算一次。
@@ -637,7 +660,23 @@ async function apiMonthly() {
       ...c,
       seasonByMonth: await monthlySeasonStats(c.code, monthKey, seasonTtl).catch(() => null),
     }));
-    const usable = withStats.filter((x) => x.seasonByMonth);
+
+    /* 个股的月内峰值时点：同样按月缓存，日线只走内存。
+       只给"至少有一个月是脉冲型"的票算——其它票的时点界面上根本不显示，
+       两百多只票全拉一遍日线要多花一两分钟，不值当。 */
+    const timingPool = withStats.filter(
+      (x) => x.seasonByMonth && Object.values(x.seasonByMonth).some((s) => s && s.pulse),
+    );
+    const timed = await mapLimit(timingPool, 6, async (c) => ({
+      code: c.code,
+      timingByMonth: await stockTiming(c.code, monthKey, seasonTtl, now).catch(() => null),
+    }));
+    const timingByCode = new Map(
+      timed.filter((x) => x.timingByMonth).map((x) => [x.code, x.timingByMonth]),
+    );
+    const usable = withStats
+      .filter((x) => x.seasonByMonth)
+      .map((c) => ({ ...c, timingByMonth: timingByCode.get(c.code) || null }));
 
     /* ---- 季节性题材：冰雪经济 / 天然气 / 白酒… 同样是按月缓存 ----
        题材本身也是用"成分股的月线"算出来的：把成分股各自的季节统计平均一下，
@@ -662,10 +701,10 @@ async function apiMonthly() {
             `theme_timing_${t.code}_${monthKey}`,
             seasonTtl,
             async () => {
-              const bars = await mapLimit(
+          const bars = await mapLimit(
                 members.slice(0, cfg.SELECT.themeTimingMembers),
                 4,
-                (m) => em.kline(m.code, { limit: cfg.SELECT.themeTimingLimit })
+                (m) => em.kline(m.code, { limit: cfg.SELECT.themeTimingLimit }, { disk: false })
                   .then((k) => (k && k.bars) || null)
                   .catch(() => null),
               );

@@ -90,6 +90,7 @@ module.exports = {
     themeMembers: 15,         // 每个季节性题材取 N 只主力成分股来算题材的季节规律
     themeTimingMembers: 5,    // 再取 N 只主力成分股的日线，算"月内峰值大概出现在哪几天"
     themeTimingLimit: 1600,   // 日线取多少根（约 6 年多，够统计月内时点）
+    stockTimingLimit: 1600,   // 候选个股算月内峰值时点用的日线根数
     minTurnover: 8000,        // 最低成交额（万元），过滤僵尸股
     maxTurnoverRate: 35,      // 换手率上限，过滤过度炒作
     snapshotPages: 0,         // 全市场快照最多抓几页（0 = 全部，约 35 页）

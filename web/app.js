@@ -1094,6 +1094,33 @@
     const row = el('div', 'month-row');
     const s = item.season || {};
     const z = zodiacMap ? zodiacMap.get(item.code) : null;
+
+    // 脉冲标签：把"大概哪几天见顶"直接写进标签，细节放 title
+    let pulseHtml = '';
+    if (item.pulse) {
+      const tm = item.timing;
+      let label = '月内脉冲';
+      let tip =
+        `这只票这个月的历史表现是「冲几天又还回去」的脉冲型：` +
+        `月内最高 ${num(s.avgPeak)}%、月末只剩 ${num(s.avgPct)}%（回吐 ${Math.round((s.giveBack || 0) * 100)}%）`;
+      if (tm && Number.isFinite(tm.dayMid)) {
+        const range = tm.dayLow === tm.dayHigh
+          ? `${esc(monthName)}${tm.dayMid} 日`
+          : `${esc(monthName)}${tm.dayLow}–${tm.dayHigh} 日`;
+        const trade = tm.tradeLow === tm.tradeHigh
+          ? `第 ${tm.tradeMid} 个交易日`
+          : `第 ${tm.tradeLow}~${tm.tradeHigh} 个交易日`;
+        const mm = esc(String(monthName).replace(/\s/g, ''));
+        label += ` · ${tm.dayLow === tm.dayHigh ? `${mm}${tm.dayMid}日` : `${mm}${tm.dayLow}–${tm.dayHigh}日`}`;
+        tip += `；过去 ${tm.samples} 次里，峰值一般在 ${range}（${trade}）`;
+        if (Number.isFinite(tm.holidayMid)) {
+          tip += `；相对${tm.holidayName || '春节'}中位数 ${tm.holidayMid} 个交易日`;
+        }
+      }
+      tip += '。别当整月顺风股拿着，要参与就在峰值窗口附近抢一把。';
+      pulseHtml = `<span class="tag pulse-tag" title="${escapeAttr(tip)}">${esc(label)}</span>`;
+    }
+
     const bits = [];
     if (Number.isFinite(item.seasonScore)) bits.push(`季节 ${num(item.seasonScore, 1)}`);
     if (Number.isFinite(item.techScore)) bits.push(`当前 ${Math.round(item.techScore)}`);
@@ -1116,11 +1143,7 @@
          ${(item.themes || [])
            .map((t) => `<span class="tag theme-tag" title="这个月是「${escapeAttr(t)}」的历史旺季">${esc(t)}</span>`)
            .join('')}
-         ${item.pulse
-           ? `<span class="tag pulse-tag" title="这只票这个月的历史涨幅是「冲几天又还回去」的脉冲型：月内最高 ${num(
-               (item.season || {}).avgPeak,
-             )}%、月末只剩 ${num((item.season || {}).avgPct)}%，别当整月顺风股拿着">月内脉冲</span>`
-           : ''}
+         ${pulseHtml}
        </div>
        <div class="mr-price ${pctClass(item.changePct)}">${num(item.price)}
          <span class="sub">${pctText(item.changePct)}</span></div>

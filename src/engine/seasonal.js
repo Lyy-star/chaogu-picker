@@ -194,6 +194,8 @@ function rankForMonth(candidates, month, {
       themes,
       themeBonus: themes.length ? themeBonus : 0,
       pulse: !!season.pulse,
+      // 月内峰值大概落在哪几天（只有脉冲型的票才在界面上用得到）
+      timing: season.pulse && c.timingByMonth ? c.timingByMonth[month] || null : null,
     });
   }
 
