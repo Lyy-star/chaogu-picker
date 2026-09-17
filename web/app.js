@@ -1097,6 +1097,7 @@
     const bits = [];
     if (Number.isFinite(item.seasonScore)) bits.push(`季节 ${num(item.seasonScore, 1)}`);
     if (Number.isFinite(item.techScore)) bits.push(`当前 ${Math.round(item.techScore)}`);
+    if ((item.themes || []).length && Number.isFinite(item.themeBonus)) bits.push(`旺季题材 +${item.themeBonus}`);
     if (Number.isFinite(item.total)) bits.push(`综合 ${num(item.total, 1)}`);
 
     row.innerHTML =
@@ -1112,6 +1113,9 @@
                         `${(z.risks || []).length ? '｜风险：' + z.risks[0] : ''}`,
                     )}">${esc(z.zodiacChar)}</span>`
            : ''}
+         ${(item.themes || [])
+           .map((t) => `<span class="tag theme-tag" title="这个月是「${escapeAttr(t)}」的历史旺季">${esc(t)}</span>`)
+           .join('')}
        </div>
        <div class="mr-price ${pctClass(item.changePct)}">${num(item.price)}
          <span class="sub">${pctText(item.changePct)}</span></div>
@@ -1260,6 +1264,50 @@
     box.insertAdjacentHTML('beforeend', zodiacNoteHtml(d, label, winSet.has(picked)));
     list.appendChild(box);
 
+    // 本月旺季题材：冰雪经济、天然气、白酒这一类按"时令"炒的题材
+    const themeBox = el('div', 'card month-card');
+    const themes = (d.themes && d.themes[picked]) || [];
+    themeBox.innerHTML =
+      `<h3>${label} 的旺季题材 <span class="badge">拿成分股月线算出来的，不是写死的窗口</span></h3>`;
+    if (!themes.length) {
+      themeBox.appendChild(emptyNode('这个月没有出现历史上明显旺季的题材'));
+    } else {
+      const wrap = el('div', 'theme-list');
+      themes.forEach((t) => {
+        const s = t.stats || {};
+        const row = el('div', 'theme-row');
+        row.innerHTML =
+          `<div class="theme-head">
+             <span class="stock-name">${esc(t.name)}</span>
+             <span class="badge ${s.avgPct >= 0 ? 'hot' : 'cold'}">历史平均 ${s.avgPct > 0 ? '+' : ''}${num(s.avgPct)}%</span>
+             <span class="badge">${esc(String(s.up))}/${esc(String(s.members))} 只成分股平均上涨</span>
+             <span class="stock-code">样本至少 ${esc(String(s.total))} 年 · 主力成分股 ${esc(String(t.memberCount))} 只</span>
+           </div>
+           <div class="theme-hint">${esc(t.hint || '')}</div>
+           <div class="theme-stocks">${(t.stocks || [])
+             .map(
+               (x) =>
+                 `<span class="theme-stock" data-code="${esc(x.code)}">${esc(x.name)}
+                    <b class="${pctClass(x.changePct)}">${pctText(x.changePct)}</b></span>`,
+             )
+             .join('')}</div>`;
+        row.querySelectorAll('.theme-stock').forEach((n) => {
+          n.addEventListener('click', () => openDetail(n.dataset.code, null));
+        });
+        wrap.appendChild(row);
+      });
+      themeBox.appendChild(wrap);
+      themeBox.insertAdjacentHTML(
+        'beforeend',
+        `<div class="ev-impact">旺季判定：成分股在这个月的历史平均涨幅 ≥ ${esc(
+          String((d.themeRule || {}).minAvgPct),
+        )}%、上涨占比 ≥ ${esc(String((d.themeRule || {}).minWinRate))}% 才算数。踩在旺季题材上的票，综合分额外加 ${esc(
+          String(d.themeBonus),
+        )} 分并在名称后面标出来。<br />题材只是"这个时间点历史上容易被炒"，不是保证；冰雪经济这种情绪题材，通常来得快去得也快。</div>`,
+      );
+    }
+    list.appendChild(themeBox);
+
     const noteBox = el('div', 'card month-card');
     noteBox.innerHTML = `<h3>这份推荐是怎么来的</h3><ul class="plain">${(d.notes || [])
       .map((n) => `<li>${esc(n)}</li>`)
@@ -1282,6 +1330,10 @@
       '<br><br>候选池 = 选股结果 + 成交额最大的 160 只主板股 + 40 只「上市 2~4 年」的次新；' +
       '「当前分」用行情快照统一重算' +
       '（相对强度 + 主力资金 + 量能），保证上百只票是用同一把尺子量出来的。' +
+      '<br><br><b>旺季题材：</b>除了个股的季节性，还叠了一层题材季节性——冰雪经济（大连圣亚、长白山这类）、' +
+      '天然气、白酒、啤酒、影视院线、旅游酒店、农业种植、免税、军工、户外露营。' +
+      '题材名单是人工挑的，但"哪几个月是旺季"是拿成分股的月线算出来的：成分股在这个月的历史平均涨幅和上涨占比够高才算旺季，' +
+      '踩上旺季题材的票会额外加分并打标签。' +
       '生肖那段是按名称筛选的题材统计，不是业绩逻辑。' +
       '<br><br><b>缓存：</b>历史规律（月线统计）只按自然月更新——本月第一次打开要算三十多秒，之后当月都是秒开；' +
       '榜单本身每 5 分钟用最新行情重算一次，所以现价、涨跌幅、主力资金这些是随盘面走的，不会冻结。' +

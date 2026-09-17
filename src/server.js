@@ -17,6 +17,7 @@ const verdictEngine = require('./engine/verdict');
 const holdingEngine = require('./engine/holding');
 const insightEngine = require('./engine/insight');
 const seasonalEngine = require('./engine/seasonal');
+const themesEngine = require('./engine/themes');
 const shortTermEngine = require('./engine/shortterm');
 const hotStockEngine = require('./engine/hotstock');
 const reviewEngine = require('./engine/review');
@@ -547,6 +548,43 @@ function msUntilNextMonth(now = new Date()) {
   return Math.max(0, next.getTime() - now.getTime());
 }
 
+// 月线拉失败过的代码（本进程内冷却，避免每 5 分钟重建榜单时反复重试）
+const seasonFailUntil = new Map();
+const SEASON_FAIL_COOLDOWN = 30 * 60 * 1000;
+
+/**
+ * 单只票 12 个自然月的历史季节性，按 (代码, 年月) 落盘缓存。
+ * "历史上 9 月平均涨多少"这个月内不会变，所以一个月只拉一次月线；
+ * 候选股和题材成分股共用这份缓存，重叠的票不会重复拉。
+ *
+ * 注意：网络失败**不写缓存**——否则一次抖动会把这只票踢出整个月；
+ * 真的没有月线（次新、长期停牌）才缓存 null。
+ */
+function monthlySeasonStats(code, monthKey, ttl) {
+  return cached(
+    `mseason_${code}_${monthKey}`,
+    ttl,
+    async () => {
+      if ((seasonFailUntil.get(code) || 0) > Date.now()) throw new Error('这只票的月线暂时拉不到，先跳过');
+      const k = await em.monthlyKline(code, 120).catch((err) => {
+        seasonFailUntil.set(code, Date.now() + SEASON_FAIL_COOLDOWN);
+        throw err;
+      });
+      if (!k || !k.bars || !k.bars.length) return null;
+      seasonFailUntil.delete(code);
+      const byMonth = {};
+      for (let m = 1; m <= 12; m += 1) {
+        const s = seasonalEngine.seasonOf(k.bars, m);
+        if (s && s.total) {
+          byMonth[m] = { total: s.total, avgPct: s.avgPct, winRate: s.winRate, up: s.up };
+        }
+      }
+      return Object.keys(byMonth).length ? byMonth : null;
+    },
+    { disk: true },
+  );
+}
+
 async function apiMonthly() {
   // 榜单本身只缓存 5 分钟：价格、涨跌幅、主力资金这些"日常数据"每次都用最新快照重算。
   // 真正重的月线统计在下面按自然月缓存，一个月只算一次。
@@ -598,25 +636,84 @@ async function apiMonthly() {
        日常刷新只重算下面的价格 / 涨跌 / 当前分。 */
     const withStats = await mapLimit([...pool.values()], 6, async (c) => ({
       ...c,
-      seasonByMonth: await cached(
-        `mseason_${c.code}_${monthKey}`,
-        seasonTtl,
-        async () => {
-          const k = await em.monthlyKline(c.code, 120).catch(() => null);
-          if (!k || !k.bars || !k.bars.length) return null;
-          const byMonth = {};
-          for (let m = 1; m <= 12; m += 1) {
-            const s = seasonalEngine.seasonOf(k.bars, m);
-            if (s && s.total) {
-              byMonth[m] = { total: s.total, avgPct: s.avgPct, winRate: s.winRate, up: s.up };
-            }
-          }
-          return Object.keys(byMonth).length ? byMonth : null;
-        },
-        { disk: true },
-      ),
+      seasonByMonth: await monthlySeasonStats(c.code, monthKey, seasonTtl).catch(() => null),
     }));
     const usable = withStats.filter((x) => x.seasonByMonth);
+
+    /* ---- 季节性题材：冰雪经济 / 天然气 / 白酒… 同样是按月缓存 ----
+       题材本身也是用"成分股的月线"算出来的：把成分股各自的季节统计平均一下，
+       够强的月份才算这个题材的旺季，窗口不写死。 */
+    // 题材汇总只缓存 1 小时：成分股的季节统计是按月缓存的，汇总重算很便宜，
+    // 但这样"这次没拉到的成分股"过一会儿能补上，而不是整月缺一块
+    const themeData = await cached(
+      `monthly_themes_${monthKey}`,
+      60 * 60 * 1000,
+      async () => {
+        const out = [];
+        for (const t of themesEngine.SEASONAL_THEMES) {
+          const members = (await em.boardMembers(t.code, { size: 100 }).catch(() => []))
+            .filter((m) => shortTermEngine.isMainBoard(m.code))
+            .slice(0, cfg.SELECT.themeMembers);
+          const stats = await mapLimit(members, 6, (m) =>
+            monthlySeasonStats(m.code, monthKey, seasonTtl).catch(() => null));
+          const season = themesEngine.themeSeason(stats);
+          out.push({
+            code: t.code,
+            name: t.name,
+            hint: t.hint,
+            months: season.months,
+            active: season.active,
+            members: members.map((m) => ({ code: m.code, name: m.name })),
+          });
+        }
+        return out;
+      },
+      { disk: true },
+    );
+
+    // 每个月有哪些题材在旺季（价格用最新快照补，所以不会跟着冻一个月）
+    const snapByCode = new Map(rows.map((r) => [r.code, r]));
+    const themeBoard = {};
+    for (let m = 1; m <= 12; m += 1) themeBoard[m] = [];
+    const themeOfStock = new Map();
+    for (const t of themeData) {
+      for (const m of t.active) {
+        themeBoard[m].push({
+          code: t.code,
+          name: t.name,
+          hint: t.hint,
+          stats: t.months[m],
+          memberCount: t.members.length,
+          stocks: t.members.slice(0, 6).map((mem) => {
+            const q = snapByCode.get(mem.code) || {};
+            return {
+              code: mem.code,
+              name: mem.name,
+              price: q.price,
+              changePct: q.changePct,
+              change60Pct: q.change60Pct,
+            };
+          }),
+        });
+      }
+      for (const mem of t.members) {
+        if (!themeOfStock.has(mem.code)) themeOfStock.set(mem.code, {});
+        const byMonth = themeOfStock.get(mem.code);
+        for (const m of t.active) {
+          if (!byMonth[m]) byMonth[m] = [];
+          byMonth[m].push(t.name);
+        }
+      }
+    }
+    for (let m = 1; m <= 12; m += 1) {
+      themeBoard[m].sort((a, b) => (b.stats.avgPct || 0) - (a.stats.avgPct || 0));
+    }
+
+    // 把"踩在旺季题材上"的月份挂到候选股上，排序时会加分
+    const rankedPool = usable.map((c) => ({
+      ...c,
+      themeNamesByMonth: themeOfStock.get(c.code) || null,
+    }));
 
     const thisAnimal = seasonalEngine.zodiacOf(year);
     const nextAnimal = seasonalEngine.zodiacOf(year + 1);
@@ -710,7 +807,11 @@ async function apiMonthly() {
     // 12 个月的排名一次算完，前端切月是秒切，不用再请求一次
     const months = {};
     for (let m = 1; m <= 12; m += 1) {
-      months[m] = seasonalEngine.rankForMonth(usable, m, { limit: 100, minYears: 2 });
+      months[m] = seasonalEngine.rankForMonth(rankedPool, m, {
+        limit: 100,
+        minYears: 2,
+        themeBonus: themesEngine.THEME_BONUS,
+      });
     }
 
     return {
@@ -723,6 +824,9 @@ async function apiMonthly() {
       candidates: withStats.length,
       barsAvailable: usable.length,
       months,
+      themes: themeBoard,
+      themeRule: themesEngine.ACTIVE_RULE,
+      themeBonus: themesEngine.THEME_BONUS,
       thisMonth: months[month],
       next: months[nextMonth],
       zodiac: {
@@ -743,6 +847,9 @@ async function apiMonthly() {
         `候选池 = 选股结果 + 成交额最大的 ${cfg.SELECT.monthlyPool} 只主板股 + 成交额靠前的 ${cfg.SELECT.monthlyYoung} 只「上市 2~4 年」次新（比如 2024 年上市的，月线就只有近两年）。`,
         '样本不足 2 年的票不参与排名（上市太短）；每行都标了样本年数，2 年的规律本来就比 10 年的更容易是巧合，看到综合分高但样本只有两三年的，自己留个心眼。',
         '「当前分」统一用行情快照重算（相对强度 + 主力资金 + 量能），没有用日线技术分——榜上有上百只票，必须用同一把尺子量。',
+        '季节性题材（冰雪经济、天然气、白酒、啤酒、影视院线…）是额外的一层：题材名单是人工挑的，但"哪几个月是旺季"是拿成分股的月线算出来的——' +
+          `成分股在这个月的历史平均涨幅 ≥ ${themesEngine.ACTIVE_RULE.minAvgPct}%、上涨占比 ≥ ${themesEngine.ACTIVE_RULE.minWinRate}% 才算旺季。` +
+          `踩在旺季题材上的票，综合分额外加 ${themesEngine.THEME_BONUS} 分并在标签里标出来。`,
         `生肖只是月份里的备注，而且注意：市场炒的是"明年的生肖"（现在这个时间是 ${year + 1} 年 ${nextAnimal} 年）。
          我先用近三年生肖股的月度表现统计出炒作窗口，再从往年龙头反推"适合埋伏的票"长什么样——
          纯情绪票，不看业绩，只看低价、小市值、还没启动、盘面安静这几条。`,

@@ -349,6 +349,33 @@ async function boardStocks(boardCode, size = 60, options = {}) {
   }, options);
 }
 
+/**
+ * 板块成分股（按成交额排序）。
+ * 和 boardStocks 的区别：那个按涨幅排、给界面看；这个要的是"这个题材里最有代表性的票"，
+ * 所以按成交额排并且能拿到全部主力成员，用来统计题材的历史季节性。
+ */
+async function boardMembers(boardCode, { size = 80, sortBy = 'f6' } = {}, options = {}) {
+  const key = `board_members_${boardCode}_${sortBy}_${size}`;
+  return cached(key, cfg.CACHE_TTL.board, async () => {
+    const fields = 'f2,f3,f6,f8,f12,f14,f20,f21,f24,f62';
+    const url = `${PUSH2}/clist/get?ut=${UT}&invt=2&fltt=2&np=1&pn=1&pz=${size}&po=1&fid=${sortBy}` +
+      `&fs=${encodeURIComponent(`b:${boardCode}`)}&fields=${fields}`;
+    const json = await emJSON(url);
+    return diffRows(json).map((r) => ({
+      code: String(r.f12 || ''),
+      name: String(r.f14 || ''),
+      price: num(r.f2),
+      changePct: num(r.f3),
+      amount: num(r.f6),
+      turnoverRate: num(r.f8),
+      marketCap: num(r.f20),
+      floatCap: num(r.f21),
+      change60Pct: num(r.f24),
+      mainNetIn: num(r.f62),
+    }));
+  }, options);
+}
+
 /** 个股主力资金流排行（主板），用于"资金热点" */
 async function moneyFlowRank(size = 80, boards = cfg.EM_MAIN_BOARD_FS, options = {}) {
   const key = `flow_rank_${size}_${boards}`;
@@ -1352,6 +1379,7 @@ module.exports = {
   marketBreadth,
   boardRank,
   boardStocks,
+  boardMembers,
   moneyFlowRank,
   minuteTrends,
   kline,

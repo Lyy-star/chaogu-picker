@@ -66,7 +66,9 @@ function seasonOf(bars, month) {
  * @param {Array} candidates [{code,name,price,changePct,techScore,bars}]
  * @param {number} month 1-12
  */
-function rankForMonth(candidates, month, { minYears = 2, limit = 100, seasonWeight = 0.65 } = {}) {
+function rankForMonth(candidates, month, {
+  minYears = 2, limit = 100, seasonWeight = 0.65, themeBonus = 0,
+} = {}) {
   const scored = [];
 
   for (const c of candidates || []) {
@@ -79,9 +81,12 @@ function rankForMonth(candidates, month, { minYears = 2, limit = 100, seasonWeig
     // 「当前分」统一用行情快照重算：榜单里有上百只票，只有选股结果那几十只带日线 techScore，
     // 直接混在一起排等于用两把尺子量，所以这里全部换成同一口径。
     const tech = snapshotScore(c);
-    const total = tech === null
+    const base = tech === null
       ? sScore
       : Math.round((sScore * seasonWeight + tech * (1 - seasonWeight)) * 10) / 10;
+    // 踩在旺季题材上（比如 11 月的冰雪经济）额外加一点分，并标记出来
+    const themes = (c.themeNamesByMonth && c.themeNamesByMonth[month]) || [];
+    const total = round(base + (themes.length ? themeBonus : 0), 1);
 
     scored.push({
       code: c.code,
@@ -100,6 +105,8 @@ function rankForMonth(candidates, month, { minYears = 2, limit = 100, seasonWeig
       },
       seasonScore: sScore,
       total,
+      themes,
+      themeBonus: themes.length ? themeBonus : 0,
     });
   }
 

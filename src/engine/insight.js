@@ -31,7 +31,14 @@ function stddev(arr) {
 }
 
 /** 按月聚合：月涨幅 = 本月最后收盘 / 上月最后收盘 - 1 */
-function monthlyReturns(bars) {
+/**
+ * 月线 -> 每个月相对上个月的涨跌幅。
+ *
+ * 当月那根月线还没走完，它的"月涨幅"其实只是月内涨幅，
+ * 混进历史平均里会把规律带偏（半个月涨 3% 和整月涨 3% 不是一回事），
+ * 所以默认把当前月剔除。需要看实时的月内涨幅时传 includePartialMonth。
+ */
+function monthlyReturns(bars, { includePartialMonth = false, now = new Date() } = {}) {
   const byMonth = new Map();
   for (const b of bars || []) {
     const d = String(b && b.date ? b.date : '');
@@ -55,6 +62,11 @@ function monthlyReturns(bars) {
       month: cur.month,
       pct: ((cur.close - prev.close) / prev.close) * 100,
     });
+  }
+
+  if (!includePartialMonth && out.length) {
+    const curKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+    if (out[out.length - 1].key === curKey) out.pop();
   }
   return out;
 }
