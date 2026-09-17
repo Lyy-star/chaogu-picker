@@ -85,6 +85,8 @@ module.exports = {
     boardStockTop: 30,        // 每个热点板块取前 N 只主板股
     announcementPages: 8,     // 全市场公告翻页数（每页 100 条）
     newsPages: 3,             // 7x24 快讯翻页
+    monthlyPool: 160,         // 月度推荐候选池：按成交额取前 N 只去拉月线（要排到 100 只）
+    monthlyYoung: 40,         // 月度推荐候选池：再按成交额取 N 只"上市 2~4 年"的次新
     minTurnover: 8000,        // 最低成交额（万元），过滤僵尸股
     maxTurnoverRate: 35,      // 换手率上限，过滤过度炒作
     snapshotPages: 0,         // 全市场快照最多抓几页（0 = 全部，约 35 页）

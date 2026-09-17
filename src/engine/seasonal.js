@@ -66,16 +66,19 @@ function seasonOf(bars, month) {
  * @param {Array} candidates [{code,name,price,changePct,techScore,bars}]
  * @param {number} month 1-12
  */
-function rankForMonth(candidates, month, { minYears = 3, limit = 12, seasonWeight = 0.65 } = {}) {
+function rankForMonth(candidates, month, { minYears = 2, limit = 100, seasonWeight = 0.65 } = {}) {
   const scored = [];
 
   for (const c of candidates || []) {
     if (!c || !c.code) continue;
-    const season = seasonOf(c.bars, month);
+    // 优先用按月缓存好的季节统计（月度榜走这条），没有就现算（其它调用方传 bars）
+    const season = (c.seasonByMonth && c.seasonByMonth[month]) || seasonOf(c.bars, month);
     if (!season || !season.total || season.total < minYears) continue;
 
     const sScore = seasonScore(season);
-    const tech = Number.isFinite(c.techScore) ? c.techScore : null;
+    // 「当前分」统一用行情快照重算：榜单里有上百只票，只有选股结果那几十只带日线 techScore，
+    // 直接混在一起排等于用两把尺子量，所以这里全部换成同一口径。
+    const tech = snapshotScore(c);
     const total = tech === null
       ? sScore
       : Math.round((sScore * seasonWeight + tech * (1 - seasonWeight)) * 10) / 10;
@@ -88,14 +91,54 @@ function rankForMonth(candidates, month, { minYears = 3, limit = 12, seasonWeigh
       amount: c.amount,
       turnoverRate: c.turnoverRate,
       techScore: tech,
-      season,
+      // 季节统计只留界面上要用的四个字段：100 只 × 12 个月的完整对象太占体积
+      season: {
+        total: season.total,
+        avgPct: season.avgPct,
+        winRate: season.winRate,
+        up: season.up,
+      },
       seasonScore: sScore,
       total,
     });
   }
 
-  scored.sort((a, b) => b.total - a.total);
+  scored.sort((a, b) => b.total - a.total || b.seasonScore - a.seasonScore);
   return scored.slice(0, limit);
+}
+
+/**
+ * 当前分（0-100）：只用行情快照就能算出来的一致口径。
+ * 相对强度为主（温和启动最好、暴涨算追高），再叠加资金和量能。
+ */
+function snapshotScore(row) {
+  if (!row) return null;
+  let s = 50;
+
+  const chg60 = num(row.change60Pct);
+  if (chg60 !== null) {
+    if (chg60 >= -10 && chg60 <= 20) s += 12;
+    else if (chg60 > 60) s -= 14;
+    else if (chg60 > 35) s -= 6;
+    else if (chg60 < -25) s -= 8;
+  }
+
+  const netPct = num(row.mainNetInPct);
+  if (netPct !== null) {
+    if (netPct >= 5) s += 10;
+    else if (netPct >= 1) s += 4;
+    else if (netPct <= -5) s -= 12;
+    else if (netPct < 0) s -= 4;
+  }
+
+  const tr = num(row.turnoverRate);
+  if (tr !== null) {
+    if (tr >= 2 && tr <= 15) s += 8;
+    else if (tr > 35) s -= 10;
+    else if (tr < 0.5) s -= 6;
+  }
+
+  return Math.max(0, Math.min(100, Math.round(s)));
 }
 
 /** 名称里带生肖字的股票，返回命中的字 */
@@ -114,6 +157,11 @@ function matchZodiac(rows, chars) {
 function mean(arr) {
   if (!arr.length) return null;
   return arr.reduce((a, b) => a + b, 0) / arr.length;
+}
+
+function num(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
 }
 
 function round(v, digits = 2) {
@@ -388,6 +436,7 @@ module.exports = {
   seasonScore,
   seasonOf,
   rankForMonth,
+  snapshotScore,
   matchZodiac,
   hypeWindow,
   leaderProfile,

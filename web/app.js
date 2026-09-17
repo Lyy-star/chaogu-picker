@@ -1087,9 +1087,10 @@
 
   /* ---------------------- 月度推荐 + 生肖 ---------------------- */
 
-  const monthlyCache = { data: null, loading: false, month: null };
+  const monthlyCache = { data: null, loading: false, month: null, page: 1 };
+  const MONTH_PAGE_SIZE = 20; // 月度榜最长 100 只，每页 20 只正好 5 页
 
-  function monthRow(item, monthName, zodiacMap) {
+  function monthRow(item, monthName, zodiacMap, rank) {
     const row = el('div', 'month-row');
     const s = item.season || {};
     const z = zodiacMap ? zodiacMap.get(item.code) : null;
@@ -1100,6 +1101,7 @@
 
     row.innerHTML =
       `<div class="mr-name clickable" title="点名称看完整分析">
+         <span class="mr-rank">${esc(String(rank))}</span>
          <span class="stock-name">${esc(item.name || item.code)}</span>
          <span class="stock-code">${esc(item.code)}</span>
          ${z
@@ -1202,16 +1204,17 @@
       `<span class="badge">看哪个月 <select id="monthSelect">${options}</select></span>
        <span class="badge">${esc(d.monthName)}是当前月</span>
        ${winSet.has(picked) ? '<span class="badge hot">这个月是生肖炒作窗口</span>' : ''}
-       <span class="stock-code">候选 ${d.candidates} 只 · 有月线 ${d.barsAvailable} 只</span>`;
+       <span class="stock-code">候选 ${d.candidates} 只 · 有月线 ${d.barsAvailable} 只 · 这个月 ${items.length} 只入榜</span>`;
     list.appendChild(head);
     head.querySelector('#monthSelect').addEventListener('change', (e) => {
       monthlyCache.month = Number(e.target.value);
+      monthlyCache.page = 1;
       render();
     });
 
     const box = el('div', 'card month-card');
     box.innerHTML =
-      `<h3>${label} 历史顺风股 <span class="badge">季节性 65% + 当前评分 35%</span></h3>
+      `<h3>${label} 历史顺风股 <span class="badge">季节性 65% + 当前分 35%</span></h3>
        <div class="month-row month-row-head">
          <div>股票</div>
          <div>现价 / 涨跌</div>
@@ -1222,7 +1225,37 @@
     if (!items.length) {
       box.appendChild(emptyNode('这个月的历史样本不足，暂时没有符合条件的票'));
     } else {
-      items.forEach((it) => box.appendChild(monthRow(it, label, zodiacMap)));
+      const pages = Math.max(1, Math.ceil(items.length / MONTH_PAGE_SIZE));
+      const page = Math.min(Math.max(1, monthlyCache.page || 1), pages);
+      monthlyCache.page = page;
+      const from = (page - 1) * MONTH_PAGE_SIZE;
+      items
+        .slice(from, from + MONTH_PAGE_SIZE)
+        .forEach((it, i) => box.appendChild(monthRow(it, label, zodiacMap, from + i + 1)));
+
+      if (pages > 1) {
+        const pager = el('div', 'pager');
+        const nums = [];
+        for (let i = 1; i <= pages; i += 1) {
+          nums.push(
+            `<button class="btn ghost pg-num${i === page ? ' on' : ''}" data-page="${i}"${i === page ? ' disabled' : ''}>${i}</button>`,
+          );
+        }
+        pager.innerHTML =
+          `<button class="btn ghost pg-num" data-page="${page - 1}"${page <= 1 ? ' disabled' : ''}>上一页</button>
+           ${nums.join('')}
+           <button class="btn ghost pg-num" data-page="${page + 1}"${page >= pages ? ' disabled' : ''}>下一页</button>
+           <span class="stock-code">共 ${items.length} 只 · 每页 ${MONTH_PAGE_SIZE} 只 · 第 ${page}/${pages} 页</span>`;
+        pager.querySelectorAll('[data-page]').forEach((b) => {
+          b.addEventListener('click', () => {
+            const target = Number(b.dataset.page);
+            if (!target || target < 1 || target > pages || target === page) return;
+            monthlyCache.page = target;
+            render();
+          });
+        });
+        box.appendChild(pager);
+      }
     }
     box.insertAdjacentHTML('beforeend', zodiacNoteHtml(d, label, winSet.has(picked)));
     list.appendChild(box);
@@ -1240,12 +1273,18 @@
     const cached = monthlyCache.data;
     const pickedMonth = monthlyCache.month || (cached && cached.month) || new Date().getMonth() + 1;
     $('#catHeadline').textContent = cached
-      ? `${pickedMonth} 月的历史顺风股（上方可切换月份）· 生肖埋伏清单也就写在这一页`
-      : '正在统计每只票近 10 年的月度规律（首次 30~60 秒）…';
+      ? `${pickedMonth} 月的历史顺风股，按打分从高到低取前 100 只（分页看，上方可切换月份）`
+      : '正在统计两百多只票近 10 年的月度规律（本月第一次约 30~60 秒）…';
     $('#catMethod').innerHTML =
-      '排序口径：<b>季节性 65% + 当前选股评分 35%</b>。季节性 = 这只票在过去若干年的这个自然月里，' +
-      '平均涨多少、有几年是上涨的；样本少于 3 年的不参与排序。生肖那段是按名称筛选的题材统计，' +
-      '不是业绩逻辑。' +
+      '排序口径：<b>季节性 65% + 当前分 35%</b>，综合分从高到低取<b>前 100 只</b>，每页 20 只分页看。' +
+      '季节性 = 这只票在过去若干年的这个自然月里平均涨多少、有几年是上涨的；' +
+      '样本少于 <b>2 年</b>的（上市太短）不参与排序，每行都会标出样本年数。' +
+      '<br><br>候选池 = 选股结果 + 成交额最大的 160 只主板股 + 40 只「上市 2~4 年」的次新；' +
+      '「当前分」用行情快照统一重算' +
+      '（相对强度 + 主力资金 + 量能），保证上百只票是用同一把尺子量出来的。' +
+      '生肖那段是按名称筛选的题材统计，不是业绩逻辑。' +
+      '<br><br><b>缓存：</b>历史规律（月线统计）只按自然月更新——本月第一次打开要算三十多秒，之后当月都是秒开；' +
+      '榜单本身每 5 分钟用最新行情重算一次，所以现价、涨跌幅、主力资金这些是随盘面走的，不会冻结。' +
       '<br><br><b>免责声明：</b>历史统计不预测未来，别把季节性当成必然；真要买，仍然按交易计划的买入区间和止损执行。';
 
     const list = $('#list');
@@ -1257,7 +1296,7 @@
       return;
     }
 
-    list.appendChild(loadingNode('正在拉取几十只票的月线做统计（首次约 30~60 秒，之后 12 小时内秒开）…'));
+    list.appendChild(loadingNode('本月第一次要拉两百多只票的月线做统计（约 30~60 秒），算完这个月内都是秒开…'));
     if (monthlyCache.loading) return;
     monthlyCache.loading = true;
     try {

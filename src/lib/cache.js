@@ -21,7 +21,12 @@ function diskPath(key) {
 async function cached(key, ttl, producer, options = {}) {
   const { force = false, allowStale = true, disk = true } = options;
   const now = Date.now();
-  const hit = memory.get(key);
+  let hit = memory.get(key);
+  // 内存里没有的时候先看一眼磁盘：否则"缓存 24 小时"只对当前进程有效，
+  // 每次重开应用都要把两百多只票的月线重新拉一遍（实测要 3 分钟）。
+  if (!force && !hit && disk) {
+    if (loadFromDisk(key) !== undefined) hit = memory.get(key);
+  }
   if (!force && hit && now - hit.at < ttl) return hit.value;
 
   if (inflight.has(key)) {

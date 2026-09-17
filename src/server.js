@@ -524,16 +524,40 @@ async function apiInsight(code) {
 /**
  * 月度推荐 + 生肖股。
  *
- * 候选池 = 今日推荐里的票 + 成交额靠前的主板活跃股 + 名字带生肖字的票，
+ * 候选池 = 今日推荐里的票 + 成交额靠前的主板活跃股 + 上市三年内的次新 + 名字带生肖字的票，
  * 对它们取近 10 年月线，算"这个自然月历史上平均涨多少、几年上涨"，
- * 再和当前选股评分加权排序。结果缓存 6 小时。
+ * 再和"当前分"加权排序，取前 100 只（前端每页 20 只分页看）。结果缓存 12 小时。
  */
+/** 上市日期形如 20150312；返回上市至今的年数（拿不到日期返回 null） */
+function listingAgeYears(listDate, now) {
+  const s = String(listDate || '');
+  if (s.length < 8) return null;
+  const y = Number(s.slice(0, 4));
+  const m = Number(s.slice(4, 6));
+  const d = Number(s.slice(6, 8));
+  if (!y || !m || !d) return null;
+  const listed = new Date(y, m - 1, d).getTime();
+  if (!Number.isFinite(listed) || listed > now.getTime()) return null;
+  return (now.getTime() - listed) / (365.25 * 24 * 3600 * 1000);
+}
+
+/** 距离下一个自然月 1 号 0 点还有多少毫秒（季节统计的缓存寿命） */
+function msUntilNextMonth(now = new Date()) {
+  const next = new Date(now.getFullYear(), now.getMonth() + 1, 1, 0, 0, 0, 0);
+  return Math.max(0, next.getTime() - now.getTime());
+}
+
 async function apiMonthly() {
-  return cached('monthly_rank', 12 * 60 * 60 * 1000, async () => {
+  // 榜单本身只缓存 5 分钟：价格、涨跌幅、主力资金这些"日常数据"每次都用最新快照重算。
+  // 真正重的月线统计在下面按自然月缓存，一个月只算一次。
+  return cached('monthly_rank', 5 * 60 * 1000, async () => {
     const now = new Date();
     const year = now.getFullYear();
     const month = now.getMonth() + 1;
     const nextMonth = month === 12 ? 1 : month + 1;
+    const monthKey = `${year}-${String(month).padStart(2, '0')}`;
+    // 季节统计活到下个月初：跨月以后 key 变了，自然重算
+    const seasonTtl = msUntilNextMonth(now) + 24 * 3600 * 1000;
 
     const [picks, snapshot] = await Promise.all([
       getPicks(false).catch(() => null),
@@ -552,7 +576,47 @@ async function apiMonthly() {
       }
       for (const it of picks.top || []) add(it);
     }
-    [...rows].sort((a, b) => (b.amount || 0) - (a.amount || 0)).slice(0, 24).forEach(add);
+    // 月度榜要排到 100 只，候选池就得够大：按成交额取前面这批最活跃的主板股补进来
+    [...rows]
+      .sort((a, b) => (b.amount || 0) - (a.amount || 0))
+      .slice(0, cfg.SELECT.monthlyPool)
+      .forEach(add);
+    // 上市 2~4 年的次新再单独给一批名额：它们月线样本只有两三年，"近两年"这一档正是从它们身上来的。
+    // 光按成交额排，池子里全是十年老股，样本门槛降到 2 年也看不出效果；
+    // 上市不足 2 年的不拉——样本必然凑不够 2 年，白等一次请求。
+    [...rows]
+      .filter((r) => {
+        const age = listingAgeYears(r.listDate, now);
+        return age !== null && age >= 2 && age <= 4;
+      })
+      .sort((a, b) => (b.amount || 0) - (a.amount || 0))
+      .slice(0, cfg.SELECT.monthlyYoung)
+      .forEach(add);
+
+    /* ---- 重活：月线 -> 12 个月的历史季节性，按 (代码, 年月) 缓存到磁盘 ----
+       "历史上 9 月平均涨多少"这个月内不会变，所以一个月只拉一次月线；
+       日常刷新只重算下面的价格 / 涨跌 / 当前分。 */
+    const withStats = await mapLimit([...pool.values()], 6, async (c) => ({
+      ...c,
+      seasonByMonth: await cached(
+        `mseason_${c.code}_${monthKey}`,
+        seasonTtl,
+        async () => {
+          const k = await em.monthlyKline(c.code, 120).catch(() => null);
+          if (!k || !k.bars || !k.bars.length) return null;
+          const byMonth = {};
+          for (let m = 1; m <= 12; m += 1) {
+            const s = seasonalEngine.seasonOf(k.bars, m);
+            if (s && s.total) {
+              byMonth[m] = { total: s.total, avgPct: s.avgPct, winRate: s.winRate, up: s.up };
+            }
+          }
+          return Object.keys(byMonth).length ? byMonth : null;
+        },
+        { disk: true },
+      ),
+    }));
+    const usable = withStats.filter((x) => x.seasonByMonth);
 
     const thisAnimal = seasonalEngine.zodiacOf(year);
     const nextAnimal = seasonalEngine.zodiacOf(year + 1);
@@ -576,35 +640,42 @@ async function apiMonthly() {
       .sort((a, b) => (b.amount || 0) - (a.amount || 0))
       .slice(0, 5);
 
-    // 往年生肖（近 3 年）：拿来统计"炒在哪几个月"和"龙头长什么样"
-    const pastSets = [1, 2, 3].map((i) => {
-      const y = year - i;
-      const animal = seasonalEngine.zodiacOf(y);
-      return {
-        year: y,
-        animal,
-        rows: seasonalEngine
-          .matchZodiac(investable, [animal])
-          .sort((a, b) => (b.amount || 0) - (a.amount || 0))
-          .slice(0, 5),
-      };
-    });
-
-    const fetchMonthly = async (c) => {
-      const k = await em.monthlyKline(c.code, 120).catch(() => null);
-      return { ...c, bars: k && k.bars ? k.bars : null };
-    };
-
-    const histTasks = pastSets.flatMap((p) =>
-      p.rows.map((r) => ({ ...r, year: p.year, animal: p.animal, kind: 'history' })));
-    const poolTasks = [...pool.values()].slice(0, 20).map((c) => ({ ...c, kind: 'pool' }));
-
-    const fetched = await mapLimit([...histTasks, ...poolTasks], 4, fetchMonthly);
-    const histSamples = fetched.filter((x) => x.kind === 'history');
-    const usable = fetched.filter((x) => x.bars && x.bars.length);
-
-    const hypeWindow = seasonalEngine.hypeWindow(histSamples);
-    const leaderProfile = seasonalEngine.leaderProfile(histSamples);
+    /* ---- 重活：往年生肖股的月线 -> 炒作窗口 + 龙头画像，同样按月缓存 ----
+       这块只影响"生肖备注"，但同样要拉几十只票的月线，没必要天天算。 */
+    const zodiacHist = await cached(
+      `zodiac_hist_${monthKey}`,
+      seasonTtl,
+      async () => {
+        // 往年生肖（近 3 年）：统计"炒在哪几个月"和"龙头长什么样"
+        const pastSets = [1, 2, 3].map((i) => {
+          const y = year - i;
+          const animal = seasonalEngine.zodiacOf(y);
+          return {
+            year: y,
+            animal,
+            rows: seasonalEngine
+              .matchZodiac(investable, [animal])
+              .sort((a, b) => (b.amount || 0) - (a.amount || 0))
+              .slice(0, 5),
+          };
+        });
+        const tasks = pastSets.flatMap((p) =>
+          p.rows.map((r) => ({ ...r, year: p.year, animal: p.animal })));
+        const fetched = await mapLimit(tasks, 4, async (c) => {
+          const k = await em.monthlyKline(c.code, 120).catch(() => null);
+          return { ...c, bars: k && k.bars ? k.bars : null };
+        });
+        const samples = fetched.filter((x) => x.bars && x.bars.length);
+        return {
+          window: seasonalEngine.hypeWindow(samples),
+          profile: seasonalEngine.leaderProfile(samples),
+          pastYears: pastSets.map((p) => ({ year: p.year, animal: p.animal, sample: p.rows.length })),
+        };
+      },
+      { disk: true },
+    );
+    const hypeWindow = zodiacHist.window;
+    const leaderProfile = zodiacHist.profile;
     // 生肖候选直接用行情快照打分：快照自带 60 日涨跌幅和流通市值，
     // 足够判断"低价 / 小市值 / 还没启动 / 盘面安静"，不用再为它们拉月线。
     const ambush = [
@@ -636,11 +707,10 @@ async function apiMonthly() {
     const monthName = seasonalEngine.MONTH_CN[month - 1];
     const nextName = seasonalEngine.MONTH_CN[nextMonth - 1];
 
-    // 12 个月的排名一次算完（候选只有二三十只，计算本身很便宜），
-    // 这样前端切换月份是秒切，不用再请求一次
+    // 12 个月的排名一次算完，前端切月是秒切，不用再请求一次
     const months = {};
     for (let m = 1; m <= 12; m += 1) {
-      months[m] = seasonalEngine.rankForMonth(usable, m, { limit: 12 });
+      months[m] = seasonalEngine.rankForMonth(usable, m, { limit: 100, minYears: 2 });
     }
 
     return {
@@ -650,7 +720,7 @@ async function apiMonthly() {
       nextMonth,
       monthName,
       nextMonthName: nextName,
-      candidates: poolTasks.length,
+      candidates: withStats.length,
       barsAvailable: usable.length,
       months,
       thisMonth: months[month],
@@ -662,14 +732,17 @@ async function apiMonthly() {
         nextAnimal,
         mainCount: mainRows.length,
         homophoneChars,
-        pastYears: pastSets.map((p) => ({ year: p.year, animal: p.animal, sample: p.rows.length })),
+        pastYears: zodiacHist.pastYears,
         window: hypeWindow,
         profile: leaderProfile,
         ambush,
       },
       notes: [
-        `做法：候选股取近 10 年月线，统计它们在 ${monthName} 的历史平均涨跌和上涨年份占比，再和当前选股评分加权排序（季节性 65% + 当前评分 35%）。`,
-        '样本不足 3 年的票不会列出来——样本太短的“规律”基本都是巧合。',
+        `做法：候选股取近 10 年月线，统计它们在 ${monthName} 的历史平均涨跌和上涨年份占比，再和「当前分」加权排序（季节性 65% + 当前 35%），取前 100 只分页展示。`,
+        '月线统计按月缓存：同一只票、同一个自然月的季节规律，一个月只拉一次月线；榜单每 5 分钟用最新行情重算一次，所以列表里的现价、涨跌幅、主力资金是新的，只有"历史规律"那部分要等下个月才更新。',
+        `候选池 = 选股结果 + 成交额最大的 ${cfg.SELECT.monthlyPool} 只主板股 + 成交额靠前的 ${cfg.SELECT.monthlyYoung} 只「上市 2~4 年」次新（比如 2024 年上市的，月线就只有近两年）。`,
+        '样本不足 2 年的票不参与排名（上市太短）；每行都标了样本年数，2 年的规律本来就比 10 年的更容易是巧合，看到综合分高但样本只有两三年的，自己留个心眼。',
+        '「当前分」统一用行情快照重算（相对强度 + 主力资金 + 量能），没有用日线技术分——榜上有上百只票，必须用同一把尺子量。',
         `生肖只是月份里的备注，而且注意：市场炒的是"明年的生肖"（现在这个时间是 ${year + 1} 年 ${nextAnimal} 年）。
          我先用近三年生肖股的月度表现统计出炒作窗口，再从往年龙头反推"适合埋伏的票"长什么样——
          纯情绪票，不看业绩，只看低价、小市值、还没启动、盘面安静这几条。`,

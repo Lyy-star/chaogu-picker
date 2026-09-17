@@ -77,7 +77,8 @@ const QUOTE_FIELDS = [
 
 /** 列表型接口（clist / ulist）用的是 f2/f3/f12/f14 这套字段编号 */
 // f24 = 60 个交易日涨跌幅（判断"有没有启动"用，省掉一次 K 线请求）
-const LIST_FIELDS = 'f2,f3,f4,f5,f6,f8,f9,f10,f12,f13,f14,f15,f16,f17,f18,f20,f21,f23,f24,f62,f184';
+// f26 = 上市日期（月度推荐要用它挑"上市两三年"的新股）
+const LIST_FIELDS = 'f2,f3,f4,f5,f6,f8,f9,f10,f12,f13,f14,f15,f16,f17,f18,f20,f21,f23,f24,f26,f62,f184';
 
 function normalizeListRow(r) {
   return {
@@ -99,6 +100,7 @@ function normalizeListRow(r) {
     floatCap: num(r.f21),
     pb: num(r.f23),
     change60Pct: num(r.f24),
+    listDate: r.f26 ? String(r.f26) : '',
     mainNetIn: num(r.f62),
     mainNetInPct: num(r.f184),
   };
@@ -469,12 +471,14 @@ async function monthlyKline(code, limit = 120, options = {}) {
   const secid = toSecid(code);
   // 月线一天最多变一次，缓存 24 小时，避免反复去上游拉几十只票
   return cached(`mkline_${secid}_${limit}`, 24 * 60 * 60 * 1000, async () => {
-    const viaTencent = () => backup.tencentKline(code, limit, 'month', { timeout: 4000 });
+    // 月线只重试 1 次：这批请求有几百条，失败重试的等待时间会直接拖垮首次加载；
+    // 拉不到就少一只候选，比让用户等三分钟划算
+    const viaTencent = () => backup.tencentKline(code, limit, 'month', { timeout: 4000, retry: 1 });
     const viaEm = async () => {
       const url =
         `${PUSH2HIS}/stock/kline/get?ut=${UT}&secid=${secid}&klt=103&fqt=1&end=20500101&lmt=${limit}` +
         '&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61';
-      const json = await emJSON(url, { timeout: 5000 });
+      const json = await emJSON(url, { timeout: 5000, retry: 1 });
       const d = json && json.data;
       if (!d || !(d.klines || []).length) throw new Error('东财月线为空');
       return {
