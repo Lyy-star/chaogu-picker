@@ -1396,7 +1396,7 @@
     const pickedMonth = monthlyCache.month || (cached && cached.month) || new Date().getMonth() + 1;
     $('#catHeadline').textContent = cached
       ? `${pickedMonth} 月的历史顺风股，按打分从高到低取前 100 只（分页看，上方可切换月份）`
-      : '正在统计两百多只票近 10 年的月度规律（本月第一次约 30~60 秒）…';
+      : '正在统计两百多只票近 10 年的月度规律（点了才加载，本月第一次约 1~2 分钟）…';
     $('#catMethod').innerHTML =
       '排序口径：<b>季节性 65% + 当前分 35%</b>，综合分从高到低取<b>前 100 只</b>，每页 20 只分页看。' +
       '季节性 = 这只票在过去若干年的这个自然月里平均涨多少、有几年是上涨的；' +
@@ -1415,7 +1415,8 @@
       '春节档影视就是典型——月末平平、月内冲得很猛。脉冲型题材不给加分，只在榜单里标注出来：' +
       '它的玩法是窗口初抢一把就走，不是拿着等一个月。个股行里如果这只票也有同样的脉冲特征，会打上「月内脉冲」标签。' +
       '生肖那段是按名称筛选的题材统计，不是业绩逻辑。' +
-      '<br><br><b>缓存：</b>历史规律（月线统计）只按自然月更新——本月第一次打开要算三十多秒，之后当月都是秒开；' +
+      '<br><br><b>缓存：</b>这一页是<b>点击时才加载</b>的（不在启动时后台预热，免得跟首页抢数据源）。' +
+      '历史规律（月线统计）只按自然月更新——本月第一次打开要等 1~2 分钟，之后当月再打开都是秒开；' +
       '榜单本身每 5 分钟用最新行情重算一次，所以现价、涨跌幅、主力资金这些是随盘面走的，不会冻结。' +
       '<br><br><b>免责声明：</b>历史统计不预测未来，别把季节性当成必然；真要买，仍然按交易计划的买入区间和止损执行。';
 
@@ -1428,7 +1429,22 @@
       return;
     }
 
-    list.appendChild(loadingNode('本月第一次要拉两百多只票的月线做统计（约 30~60 秒），算完这个月内都是秒开…'));
+    // 等待时间不短，给个秒数让用户知道还在跑
+    const wait = el('div', 'loading');
+    wait.appendChild(el('div', 'spinner'));
+    const waitText = el('div', '', '正在拉取月线并统计…');
+    wait.appendChild(waitText);
+    list.appendChild(wait);
+    const waitFrom = Date.now();
+    const waitTimer = setInterval(() => {
+      if (!wait.isConnected || state.tab !== 'monthly') {
+        clearInterval(waitTimer);
+        return;
+      }
+      const secs = Math.round((Date.now() - waitFrom) / 1000);
+      waitText.textContent =
+        `正在拉取月线并统计（已等待 ${secs} 秒）——本月第一次要 1~2 分钟，算完这个月内再打开都是秒开`;
+    }, 1000);
     if (monthlyCache.loading) return;
     monthlyCache.loading = true;
     try {
