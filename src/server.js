@@ -55,13 +55,57 @@ function sendError(res, err, status = 500) {
 /* 业务接口                                                            */
 /* ------------------------------------------------------------------ */
 
-/** 选股结果：服务端缓存 90 秒，避免频繁触发上游限流 */
-function getPicks(force) {
-  return cached('picks', 90 * 1000, () => picker.pickAll({ force: false }), {
+/**
+ * 选股结果按"四类"分开缓存。
+ *
+ * 为什么要拆：四类跑完要几十秒（全市场快照 + 公告 + 财报几百个请求），
+ * 原来必须等四类全部算完才能返回，首页就是几十秒空白。
+ * 拆开之后前端可以并行请求、谁先算完先渲染，第一屏十几秒就能看到东西；
+ * 而四类之间共享的底层数据（快照 / 公告 / 板块）本来就有一层缓存，不会重复抓。
+ */
+const PICK_CATEGORIES = ['sentiment', 'news', 'event', 'fundamental'];
+const PICK_RUNNERS = {
+  sentiment: (o) => picker.pickSentiment(o),
+  news: (o) => picker.pickNews(o),
+  event: (o) => picker.pickEvent(o),
+  fundamental: (o) => picker.pickFundamental(o),
+};
+
+function getPicksCategory(cat, force) {
+  const stale = {};
+  return cached(`picks_${cat}`, 90 * 1000, () => PICK_RUNNERS[cat]({ force: false }).catch((e) => ({
+    category: cat,
+    categoryName: cat,
+    error: e.message,
+    items: [],
+  })), {
     force,
-    disk: false,
+    // 落盘 + 允许先用旧值：重开应用时首页能立刻显示上次的结果，同时在后台刷新。
+    // 12 小时以外的旧值不再直接给（隔夜太久，价格会误导）。
+    disk: true,
     allowStale: true,
-  });
+    background: 12 * 60 * 60 * 1000,
+    staleFlag: stale,
+  }).then((data) => (stale.stale ? { ...data, stale: true, dataAt: stale.at } : data));
+}
+
+/** 选股结果：四类并行算完再合并排序，内部各自缓存 90 秒 */
+async function getPicks(force) {
+  const started = Date.now();
+  const [sentiment, news, event, fundamental] = await Promise.all(
+    PICK_CATEGORIES.map((c) => getPicksCategory(c, force)),
+  );
+  const all = [...sentiment.items, ...news.items, ...event.items, ...fundamental.items];
+  all.sort((a, b) => (b.expectedPct ?? b.score) - (a.expectedPct ?? a.score));
+  return {
+    at: Date.now(),
+    elapsedMs: Date.now() - started,
+    sentiment,
+    news,
+    event,
+    fundamental,
+    top: all.slice(0, 12),
+  };
 }
 
 /**
@@ -470,6 +514,11 @@ async function apiHotStocks() {
     }
 
     const built = hotStockEngine.buildHotList(snap.rows, { limit: 12, lhbCodes, boardLeaders });
+    // 快照明明有几千只票却一只都筛不出来 = 行情数据异常（盘前/半截数据），
+    // 这种结果别缓存，否则接下来 5 分钟都会是空榜单
+    if (!built.list.length && snap.rows.length > 100) {
+      throw new Error(`行情快照异常：${snap.rows.length} 只票里没有一只能通过基础过滤，请稍后重试`);
+    }
 
     const items = await mapLimit(built.list, 4, async (c) => {
       const k = await em.kline(c.code, { limit: 40 }).catch(() => null);
@@ -1038,6 +1087,10 @@ async function handle(req, res) {
       }
       if (p === '/api/picks') {
         const force = url.searchParams.get('force') === '1';
+        const cat = url.searchParams.get('cat');
+        if (cat && PICK_RUNNERS[cat]) {
+          return sendJSON(res, { ok: true, data: await getPicksCategory(cat, force) });
+        }
         const data = await getPicks(force);
         return sendJSON(res, { ok: true, data });
       }

@@ -336,8 +336,17 @@
     const items = currentItems();
     list.innerHTML = '';
 
+    // 显示的是上次的结果（服务端先给旧值、后台刷新），说清楚免得用户以为是最新的
+    if (state.picks && state.picks.stale && items.length) {
+      const tip = el('div', 'stale-banner');
+      tip.innerHTML =
+        `<b>正在显示上次的结果</b>（更新于 ${new Date(state.picks.at).toLocaleString('zh-CN', { hour12: false })}），` +
+        '后台正在刷新最新行情，算完会自动替换。点个股看到的行情仍是实时的。';
+      list.appendChild(tip);
+    }
+
     if (state.loadingPicks && !items.length) {
-      list.appendChild(loadingNode('正在抓取全市场行情并计算（首次约 15 秒）…'));
+      list.appendChild(loadingNode('正在抓取全市场行情并计算（四类各自算完就先显示，全部约 15~50 秒）…'));
       return;
     }
     if (!items.length) {
@@ -353,7 +362,7 @@
   function loadingNode(text) {
     const node = el('div', 'loading');
     node.appendChild(el('div', 'spinner'));
-    node.appendChild(el('div', '', text));
+    node.appendChild(el('div', 'loading-text', text));
     return node;
   }
 
@@ -2454,32 +2463,90 @@
     }
   }
 
+  const PICK_CATS = ['sentiment', 'news', 'event', 'fundamental'];
+  const PICK_TABS = ['top', ...PICK_CATS];
+  let staleRetry = 0; // 显示旧结果时的补拉次数，避免一直轮询
+
+  /** 把已经回来的几类合起来排一次序（全到齐后就是完整的"今日推荐"） */
+  function mergeTopPicks() {
+    const p = state.picks || {};
+    const all = PICK_CATS.flatMap((k) => (p[k] && p[k].items) || []);
+    all.sort((a, b) => (b.expectedPct ?? b.score) - (a.expectedPct ?? a.score));
+    p.top = all.slice(0, 12);
+    return p;
+  }
+
+  /**
+   * 四类并行拉，谁先算完先渲染。
+   *
+   * 原来是一次请求等四类全部算完（几十秒首页一直空白）；现在分开请求，
+   * 第一类回来就能看见东西，剩下的陆续补上。四类共用的底层数据服务端有缓存，不会重复抓。
+   */
   async function loadPicks(force) {
     if (state.loadingPicks) return;
     state.loadingPicks = true;
     const started = Date.now();
+    let done = 0;
+    const errs = [];
+    let anyStale = false;
+    let staleOldest = Infinity;
+
+    if (force) state.picks = null;
+    state.picks = state.picks || { at: Date.now(), top: [] };
+    state.detailCache.clear();
+    mergeTopPicks();
+
     const timer = setInterval(() => {
-      setStatus(`计算中 ${Math.round((Date.now() - started) / 1000)}s`);
+      const secs = Math.round((Date.now() - started) / 1000);
+      setStatus(`计算中 ${secs}s（已出 ${done}/${PICK_CATS.length} 类）`);
+      const tip = document.querySelector('#list .loading-text');
+      if (tip && state.loadingPicks) {
+        tip.textContent = `正在抓取全市场行情并计算（已等待 ${secs} 秒，已出 ${done}/${PICK_CATS.length} 类）…`;
+      }
     }, 1000);
     $('#refreshBtn').disabled = true;
-    try {
-      state.picks = await api(`/api/picks${force ? '?force=1' : ''}`);
-      state.detailCache.clear();
-      const errs = ['sentiment', 'news', 'event', 'fundamental']
-        .map((k) => (state.picks[k] && state.picks[k].error ? `${k}:${state.picks[k].error}` : null))
-        .filter(Boolean);
-      setStatus(
-        `完成 ${Math.round(state.picks.elapsedMs / 1000)}s` + (errs.length ? `（部分失败 ${errs.join(',')}）` : ''),
-      );
-      render();
-    } catch (err) {
-      setStatus(`计算失败：${err.message}`);
-      toast(`选股失败：${err.message}`);
-      render();
-    } finally {
-      clearInterval(timer);
-      state.loadingPicks = false;
-      $('#refreshBtn').disabled = false;
+
+    await Promise.all(PICK_CATS.map(async (cat) => {
+      try {
+        const data = await api(`/api/picks?cat=${cat}${force ? '&force=1' : ''}`);
+        state.picks[cat] = data;
+        if (data.stale) {
+          anyStale = true;
+          staleOldest = Math.min(staleOldest, data.dataAt || Date.now());
+        } else {
+          state.picks.at = Date.now();
+        }
+      } catch (err) {
+        errs.push(`${cat}:${err.message}`);
+        state.picks[cat] = { category: cat, error: err.message, items: [] };
+      }
+      done += 1;
+      mergeTopPicks();
+      // 先算完的先显示（用户在看别的页签时别乱刷新）
+      if (PICK_TABS.includes(state.tab)) render();
+    }));
+
+    clearInterval(timer);
+    state.picks.stale = anyStale;
+    if (anyStale && Number.isFinite(staleOldest)) state.picks.at = staleOldest;
+    setStatus(
+      `完成 ${Math.round((Date.now() - started) / 1000)}s`
+        + (anyStale ? '（先显示上次结果，后台刷新中）' : '')
+        + (errs.length ? `（部分失败 ${errs.join(',')}）` : ''),
+    );
+    if (errs.length) toast(`部分类别没算出来：${errs.join(',')}`);
+    state.loadingPicks = false;
+    $('#refreshBtn').disabled = false;
+    if (PICK_TABS.includes(state.tab)) render();
+
+    // 服务端在后台把最新结果算好，这里过一会儿再拉一次把它换上来（最多试 8 次）
+    if (anyStale && staleRetry < 8) {
+      staleRetry += 1;
+      setTimeout(() => {
+        if (!state.loadingPicks) loadPicks(false);
+      }, 15 * 1000);
+    } else if (!anyStale) {
+      staleRetry = 0;
     }
   }
 

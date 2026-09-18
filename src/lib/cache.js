@@ -19,7 +19,16 @@ function diskPath(key) {
  * - 落盘，重启后仍可离线查看上次数据
  */
 async function cached(key, ttl, producer, options = {}) {
-  const { force = false, allowStale = true, disk = true } = options;
+  const {
+    force = false,
+    allowStale = true,
+    disk = true,
+    // 过期但还没超过 background 毫秒时：先把旧值返回去，同时在后台刷新
+    // （首页"打开就要等几十秒"就是靠这个解决的：先显示上次结果，再悄悄更新）
+    background = 0,
+    // 调用方传一个对象进来，用来知道这次到底是不是旧值、旧到什么时候
+    staleFlag = null,
+  } = options;
   const now = Date.now();
   let hit = memory.get(key);
   // 内存里没有的时候先看一眼磁盘：否则"缓存 24 小时"只对当前进程有效，
@@ -28,6 +37,25 @@ async function cached(key, ttl, producer, options = {}) {
     if (loadFromDisk(key) !== undefined) hit = memory.get(key);
   }
   if (!force && hit && now - hit.at < ttl) return hit.value;
+
+  if (!force && hit && background > 0 && now - hit.at < background) {
+    if (staleFlag) {
+      staleFlag.stale = true;
+      staleFlag.at = hit.at;
+    }
+    // 后台刷新：同一个 key 只跑一次，失败就当没这回事，下次再试
+    if (!inflight.has(key)) {
+      const refresh = (async () => {
+        const value = await producer();
+        memory.set(key, { at: Date.now(), value });
+        if (disk) saveToDisk(key, value);
+        return value;
+      })();
+      inflight.set(key, refresh);
+      refresh.catch(() => {}).finally(() => inflight.delete(key));
+    }
+    return hit.value;
+  }
 
   if (inflight.has(key)) {
     try {

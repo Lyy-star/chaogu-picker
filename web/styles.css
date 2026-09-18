@@ -558,6 +558,14 @@ ul.risks li { margin-bottom: 6px; line-height: 1.65; }
   border-radius: 50%;
   animation: spin .9s linear infinite;
 }
+
+.stale-banner {
+  margin: 0 0 10px; padding: 9px 12px;
+  border-left: 2px solid var(--warn); border-radius: 6px;
+  background: rgba(240, 163, 58, .08);
+  color: var(--text-dim); font-size: 12.5px; line-height: 1.7;
+}
+.stale-banner b { color: var(--warn); }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 .toast {
